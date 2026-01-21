@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Query, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
 from app.db.session import get_session
 from app.models.models import Language, TranslationKey, TranslationValue
@@ -54,35 +55,6 @@ async def get_structured_translations(
 
     flat = {key.key: value.value for value, key in values.all()}
     return build_tree(flat)
-
-
-# ---------------------------------------------------------
-# POST /translations/export
-# ---------------------------------------------------------
-@router.post("/export")
-async def export_translations(session: AsyncSession = Depends(get_session)):
-    languages = await session.scalars(
-        select(Language).where(Language.isEnabled == True)
-    )
-    languages = languages.all()
-
-    for lang in languages:
-        values = await session.execute(
-            select(TranslationValue, TranslationKey)
-            .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
-            .where(TranslationValue.languageId == lang.id)
-        )
-
-        flat = {key.key: value.value for value, key in values.all()}
-        tree = build_tree(flat)
-
-        output_path = NUXT_LOCALES_PATH / f"{lang.code}.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(tree, f, ensure_ascii=False, indent=2)
-
-    return {"status": "ok", "languages": [l.code for l in languages]}
 
 
 # ---------------------------------------------------------
@@ -165,3 +137,59 @@ async def import_translations(session: AsyncSession = Depends(get_session)):
 
     await session.commit()
     return {"status": "imported"}
+
+
+# ---------------------------------------------------------
+# PATCH /translations/update
+# ---------------------------------------------------------
+class UpdateTranslation(BaseModel):
+    key: str
+    lang: str
+    value: str | dict | list | None
+
+
+@router.patch("/update")
+async def update_translation(
+        payload: UpdateTranslation,
+        session: AsyncSession = Depends(get_session)
+):
+    # 1. Найти язык
+    lang = await session.scalar(
+        select(Language).where(Language.code == payload.lang)
+    )
+    if not lang:
+        raise HTTPException(404, f"Language '{payload.lang}' not found")
+
+    # 2. Найти ключ
+    key = await session.scalar(
+        select(TranslationKey).where(TranslationKey.key == payload.key)
+    )
+    if not key:
+        # если ключа нет — создаём
+        key = TranslationKey(key=payload.key)
+        session.add(key)
+        await session.flush()
+
+    # 3. Найти существующее значение
+    value_row = await session.scalar(
+        select(TranslationValue).where(
+            TranslationValue.translationKeyId == key.id,
+            TranslationValue.languageId == lang.id
+        )
+    )
+
+    if value_row:
+        # обновляем
+        value_row.value = payload.value
+    else:
+        # создаём
+        value_row = TranslationValue(
+            translationKeyId=key.id,
+            languageId=lang.id,
+            value=payload.value
+        )
+        session.add(value_row)
+
+    await session.commit()
+
+    return {"status": "updated"}
