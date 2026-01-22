@@ -193,3 +193,42 @@ async def update_translation(
     await session.commit()
 
     return {"status": "updated"}
+
+
+class DeletePayload(BaseModel):
+    key: str
+
+
+@router.delete("/delete")
+async def delete_translation_key(
+        payload: DeletePayload,
+        session: AsyncSession = Depends(get_session)
+):
+    # 1. Найти ключ
+    key_row = await session.scalar(
+        select(TranslationKey).where(TranslationKey.key == payload.key)
+    )
+
+    if not key_row:
+        raise HTTPException(404, f"Key '{payload.key}' not found")
+
+    # 2. Удалить все значения, связанные с ключом
+    await session.execute(
+        select(TranslationValue)
+        .where(TranslationValue.translationKeyId == key_row.id)
+        .execution_options(synchronize_session="fetch")
+    )
+
+    await session.execute(
+        TranslationValue.__table__.delete().where(
+            TranslationValue.translationKeyId == key_row.id
+        )
+    )
+
+    # 3. Удалить сам ключ
+    await session.delete(key_row)
+
+    # 4. Сохранить изменения
+    await session.commit()
+
+    return {"status": "deleted", "key": payload.key}
