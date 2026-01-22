@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
+from typing import List, Union
 
 from app.db.session import get_session
 from app.models.models import Language, TranslationKey, TranslationValue
@@ -33,8 +34,11 @@ async def get_translations(
 
     result = {}
     for value, key in values.all():
-        result[key.key] = value.value
-
+        try:
+            parsed = json.loads(value.value)
+            result[key.key] = parsed
+        except:
+            result[key.key] = value.value
     return result
 
 
@@ -180,6 +184,9 @@ async def update_translation(
 
     if value_row:
         # обновляем
+        # сериализуем, если это массив или объект
+        if isinstance(payload.value, (list, dict)):
+            payload.value = json.dumps(payload.value, ensure_ascii=False)
         value_row.value = payload.value
     else:
         # создаём
@@ -232,3 +239,81 @@ async def delete_translation_key(
     await session.commit()
 
     return {"status": "deleted", "key": payload.key}
+
+
+class BulkItem(BaseModel):
+    key: str
+    lang: str
+    value: Union[str, dict, list, None]
+
+
+class BulkUpdatePayload(BaseModel):
+    items: List[BulkItem]
+
+
+@router.patch("/bulk-update")
+async def bulk_update_translations(
+        payload: BulkUpdatePayload,
+        session: AsyncSession = Depends(get_session)
+):
+    # Кэшируем языки, чтобы не искать каждый раз
+    languages = {
+        lang.code: lang
+        for lang in (await session.execute(select(Language))).scalars().all()
+    }
+
+    # Кэшируем ключи
+    existing_keys = {
+        k.key: k
+        for k in (await session.execute(select(TranslationKey))).scalars().all()
+    }
+
+    # Кэшируем значения
+    existing_values = {
+        (v.translationKeyId, v.languageId): v
+        for v in (await session.execute(select(TranslationValue))).scalars().all()
+    }
+
+    updated = []
+
+    for item in payload.items:
+        # 1. Найти язык
+        lang = languages.get(item.lang)
+        if not lang:
+            raise HTTPException(404, f"Language '{item.lang}' not found")
+
+        # 2. Найти или создать ключ
+        key_row = existing_keys.get(item.key)
+        if not key_row:
+            key_row = TranslationKey(key=item.key)
+            session.add(key_row)
+            await session.flush()
+            existing_keys[item.key] = key_row
+
+        # 3. Найти или создать TranslationValue
+        value_key = (key_row.id, lang.id)
+        value_row = existing_values.get(value_key)
+
+        # сериализация списков/объектов
+        value_to_save = (
+            json.dumps(item.value, ensure_ascii=False)
+            if isinstance(item.value, (list, dict))
+            else item.value
+        )
+
+        if value_row:
+            value_row.value = value_to_save
+        else:
+            value_row = TranslationValue(
+                translationKeyId=key_row.id,
+                languageId=lang.id,
+                value=value_to_save
+            )
+            session.add(value_row)
+            existing_values[value_key] = value_row
+
+        updated.append({"key": item.key, "lang": item.lang})
+
+    await session.commit()
+
+    return {"status": "updated", "count": len(updated), "items": updated}
