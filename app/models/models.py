@@ -151,16 +151,15 @@ class PriceCard(Base):
 
 
 # -------------------------
-# HeaderMenuItem
+# HeaderMenu
 # -------------------------
-class HeaderMenuItem(Base):
-    __tablename__ = "HeaderMenuItem"
+class HeaderMenu(Base):
+    __tablename__ = "HeaderMenu"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    labelKey = Column(String(255), nullable=False)
-    href = Column(String(500), nullable=False)
-    order = Column(Integer, nullable=False)
-    isVisible = Column(Boolean, default=True)
+    json = Column(JSON, nullable=False)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 
 # -------------------------

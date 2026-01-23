@@ -8,7 +8,7 @@ from ..models.models import Testimonial
 
 router = APIRouter(prefix="/testimonials", tags=["Testimonials"])
 
-@router.get("/")
+@router.get("")
 async def get_testimonials(session: AsyncSession = Depends(get_session)):
     rows = await session.execute(
         select(Testimonial).order_by(Testimonial.order.asc(), Testimonial.id.asc())
@@ -26,7 +26,7 @@ class TestimonialCreate(BaseModel):
     isVisible: bool = True
 
 
-@router.post("/")
+@router.post("")
 async def create_testimonial(payload: TestimonialCreate, session: AsyncSession = Depends(get_session)):
     t = Testimonial(**payload.dict())
     session.add(t)
