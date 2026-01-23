@@ -317,3 +317,44 @@ async def bulk_update_translations(
     await session.commit()
 
     return {"status": "updated", "count": len(updated), "items": updated}
+
+class CreateTranslationPayload(BaseModel):
+    key: str
+    values: dict[str, Union[str, list, dict, None]] = {}
+
+@router.post("")
+async def create_translation(
+        payload: CreateTranslationPayload,
+        session: AsyncSession = Depends(get_session)
+):
+    key_row = await session.scalar(
+        select(TranslationKey).where(TranslationKey.key == payload.key)
+    )
+    if not key_row:
+        key_row = TranslationKey(key=payload.key)
+        session.add(key_row)
+        await session.flush()
+
+    languages = {
+        lang.code: lang
+        for lang in (await session.execute(select(Language))).scalars().all()
+    }
+
+    for lang_code, lang in languages.items():
+        existing_value = await session.scalar(
+            select(TranslationValue).where(
+                TranslationValue.translationKeyId == key_row.id,
+                TranslationValue.languageId == lang.id
+            )
+        )
+        if not existing_value:
+            session.add(
+                TranslationValue(
+                    translationKeyId=key_row.id,
+                    languageId=lang.id,
+                    value=payload.values.get(lang_code, "")
+                )
+            )
+
+    await session.commit()
+    return {"status": "created", "key": payload.key}

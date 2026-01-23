@@ -26,11 +26,10 @@ class MenuUpdate(BaseModel):
 async def update_menu(payload: MenuUpdate, session: AsyncSession = Depends(get_session)):
     row = await session.get(HeaderMenu, 1)
     if not row:
-        row = HeaderMenu(id=1, json=payload.json)
+        row = HeaderMenu(id=1, json=payload.data)
         session.add(row)
     else:
-        row.json = payload.json
+        row.json = payload.data
 
     await session.commit()
     return row.json
-
