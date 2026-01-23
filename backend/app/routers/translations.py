@@ -20,7 +20,7 @@ NUXT_LOCALES_PATH = Path("C:/Users/kubai/IdeaProjects/sample_project/i18n/locale
 # ---------------------------------------------------------
 # GET /translations?lang=ru
 # ---------------------------------------------------------
-@router.get("/")
+@router.get("")
 async def get_translations(
         lang: str = Query(...),
         session: AsyncSession = Depends(get_session)

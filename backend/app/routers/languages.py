@@ -8,7 +8,7 @@ from ..models.models import Language
 router = APIRouter(prefix="/languages", tags=["Languages"])
 
 
-@router.get("/")
+@router.get("")
 async def get_languages(session: AsyncSession = Depends(get_session)):
     result = await session.scalars(select(Language))
     return result.all()
