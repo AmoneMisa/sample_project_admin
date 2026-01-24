@@ -1,16 +1,19 @@
+import codecs
 import json
 import os
+from ..db.session import get_session
+from ..deps.require_user import (
+    require_permission
+)
+from ..models.models import Language, TranslationKey, TranslationValue
+from ..utils.flatten_tree import flatten_tree
+from ..utils.translation_tree import build_tree
+from fastapi import APIRouter, Query, Depends, HTTPException
 from pathlib import Path
-from fastapi import APIRouter, Query, Depends
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Union
-
-from app.db.session import get_session
-from app.models.models import Language, TranslationKey, TranslationValue
-from app.utils.translation_tree import build_tree
-from app.utils.flatten_tree import flatten_tree
 
 router = APIRouter(prefix="/translations", tags=["Translations"])
 
@@ -18,7 +21,7 @@ NUXT_LOCALES_PATH = Path("C:/Users/kubai/IdeaProjects/sample_project/i18n/locale
 
 
 # ---------------------------------------------------------
-# GET /translations?lang=ru
+# PUBLIC GET /translations?lang=ru
 # ---------------------------------------------------------
 @router.get("")
 async def get_translations(
@@ -43,7 +46,7 @@ async def get_translations(
 
 
 # ---------------------------------------------------------
-# GET /translations/structured?lang=ru
+# PUBLIC GET /translations/structured?lang=ru
 # ---------------------------------------------------------
 @router.get("/structured")
 async def get_structured_translations(
@@ -62,10 +65,9 @@ async def get_structured_translations(
 
 
 # ---------------------------------------------------------
-# GET /translations/import
+# PROTECTED GET /translations/import
 # ---------------------------------------------------------
 def decode_unicode(value):
-    """Рекурсивно декодирует строки вида '\\u0411\\u0430...' внутри любых структур."""
     if isinstance(value, str):
         if "\\u" in value:
             try:
@@ -84,7 +86,10 @@ def decode_unicode(value):
 
 
 @router.get("/import")
-async def import_translations(session: AsyncSession = Depends(get_session)):
+async def import_translations(
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_permission("translations", "update")),
+):
     files = os.listdir(NUXT_LOCALES_PATH)
 
     for file in files:
@@ -93,25 +98,20 @@ async def import_translations(session: AsyncSession = Depends(get_session)):
 
         lang_code = file.replace(".json", "")
 
-        # find language
         lang = await session.scalar(
             select(Language).where(Language.code == lang_code)
         )
         if not lang:
             continue
 
-        # load JSON
         with open(os.path.join(NUXT_LOCALES_PATH, file), "r", encoding="utf-8") as f:
             tree = json.load(f)
 
         flat = flatten_tree(tree)
 
         for key_str, value in flat.items():
-
-            # decode unicode inside strings, arrays, objects
             value = decode_unicode(value)
 
-            # find or create key
             key = await session.scalar(
                 select(TranslationKey).where(TranslationKey.key == key_str)
             )
@@ -120,7 +120,6 @@ async def import_translations(session: AsyncSession = Depends(get_session)):
                 session.add(key)
                 await session.flush()
 
-            # check if value exists
             existing_value = await session.scalar(
                 select(TranslationValue).where(
                     TranslationValue.translationKeyId == key.id,
@@ -130,7 +129,6 @@ async def import_translations(session: AsyncSession = Depends(get_session)):
             if existing_value:
                 continue
 
-            # create value
             session.add(
                 TranslationValue(
                     translationKeyId=key.id,
@@ -144,7 +142,7 @@ async def import_translations(session: AsyncSession = Depends(get_session)):
 
 
 # ---------------------------------------------------------
-# PATCH /translations/update
+# PROTECTED PATCH /translations/update
 # ---------------------------------------------------------
 class UpdateTranslation(BaseModel):
     key: str
@@ -155,26 +153,23 @@ class UpdateTranslation(BaseModel):
 @router.patch("/update")
 async def update_translation(
         payload: UpdateTranslation,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_permission("translations", "update")),
 ):
-    # 1. Найти язык
     lang = await session.scalar(
         select(Language).where(Language.code == payload.lang)
     )
     if not lang:
         raise HTTPException(404, f"Language '{payload.lang}' not found")
 
-    # 2. Найти ключ
     key = await session.scalar(
         select(TranslationKey).where(TranslationKey.key == payload.key)
     )
     if not key:
-        # если ключа нет — создаём
         key = TranslationKey(key=payload.key)
         session.add(key)
         await session.flush()
 
-    # 3. Найти существующее значение
     value_row = await session.scalar(
         select(TranslationValue).where(
             TranslationValue.translationKeyId == key.id,
@@ -182,26 +177,27 @@ async def update_translation(
         )
     )
 
+    if isinstance(payload.value, (list, dict)):
+        payload.value = json.dumps(payload.value, ensure_ascii=False)
+
     if value_row:
-        # обновляем
-        # сериализуем, если это массив или объект
-        if isinstance(payload.value, (list, dict)):
-            payload.value = json.dumps(payload.value, ensure_ascii=False)
         value_row.value = payload.value
     else:
-        # создаём
-        value_row = TranslationValue(
-            translationKeyId=key.id,
-            languageId=lang.id,
-            value=payload.value
+        session.add(
+            TranslationValue(
+                translationKeyId=key.id,
+                languageId=lang.id,
+                value=payload.value
+            )
         )
-        session.add(value_row)
 
     await session.commit()
-
     return {"status": "updated"}
 
 
+# ---------------------------------------------------------
+# PROTECTED DELETE /translations/delete
+# ---------------------------------------------------------
 class DeletePayload(BaseModel):
     key: str
 
@@ -209,9 +205,9 @@ class DeletePayload(BaseModel):
 @router.delete("/delete")
 async def delete_translation_key(
         payload: DeletePayload,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_permission("translations", "delete")),
 ):
-    # 1. Найти ключ
     key_row = await session.scalar(
         select(TranslationKey).where(TranslationKey.key == payload.key)
     )
@@ -219,28 +215,21 @@ async def delete_translation_key(
     if not key_row:
         raise HTTPException(404, f"Key '{payload.key}' not found")
 
-    # 2. Удалить все значения, связанные с ключом
-    await session.execute(
-        select(TranslationValue)
-        .where(TranslationValue.translationKeyId == key_row.id)
-        .execution_options(synchronize_session="fetch")
-    )
-
     await session.execute(
         TranslationValue.__table__.delete().where(
             TranslationValue.translationKeyId == key_row.id
         )
     )
 
-    # 3. Удалить сам ключ
     await session.delete(key_row)
-
-    # 4. Сохранить изменения
     await session.commit()
 
     return {"status": "deleted", "key": payload.key}
 
 
+# ---------------------------------------------------------
+# PROTECTED PATCH /translations/bulk-update
+# ---------------------------------------------------------
 class BulkItem(BaseModel):
     key: str
     lang: str
@@ -254,21 +243,19 @@ class BulkUpdatePayload(BaseModel):
 @router.patch("/bulk-update")
 async def bulk_update_translations(
         payload: BulkUpdatePayload,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_permission("translations", "update")),
 ):
-    # Кэшируем языки, чтобы не искать каждый раз
     languages = {
         lang.code: lang
         for lang in (await session.execute(select(Language))).scalars().all()
     }
 
-    # Кэшируем ключи
     existing_keys = {
         k.key: k
         for k in (await session.execute(select(TranslationKey))).scalars().all()
     }
 
-    # Кэшируем значения
     existing_values = {
         (v.translationKeyId, v.languageId): v
         for v in (await session.execute(select(TranslationValue))).scalars().all()
@@ -277,12 +264,10 @@ async def bulk_update_translations(
     updated = []
 
     for item in payload.items:
-        # 1. Найти язык
         lang = languages.get(item.lang)
         if not lang:
             raise HTTPException(404, f"Language '{item.lang}' not found")
 
-        # 2. Найти или создать ключ
         key_row = existing_keys.get(item.key)
         if not key_row:
             key_row = TranslationKey(key=item.key)
@@ -290,11 +275,9 @@ async def bulk_update_translations(
             await session.flush()
             existing_keys[item.key] = key_row
 
-        # 3. Найти или создать TranslationValue
         value_key = (key_row.id, lang.id)
         value_row = existing_values.get(value_key)
 
-        # сериализация списков/объектов
         value_to_save = (
             json.dumps(item.value, ensure_ascii=False)
             if isinstance(item.value, (list, dict))
@@ -318,14 +301,20 @@ async def bulk_update_translations(
 
     return {"status": "updated", "count": len(updated), "items": updated}
 
+
+# ---------------------------------------------------------
+# PROTECTED POST /translations
+# ---------------------------------------------------------
 class CreateTranslationPayload(BaseModel):
     key: str
     values: dict[str, Union[str, list, dict, None]] = {}
 
+
 @router.post("")
 async def create_translation(
         payload: CreateTranslationPayload,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_permission("translations", "create")),
 ):
     key_row = await session.scalar(
         select(TranslationKey).where(TranslationKey.key == payload.key)
