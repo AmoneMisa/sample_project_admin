@@ -1,26 +1,37 @@
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON
+    Column, Integer, String, Enum, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..db.base import Base
-
+from sqlalchemy.dialects.postgresql import JSONB
 
 # -------------------------
 # User
 # -------------------------
 class User(Base):
-    __tablename__ = "User"
+    __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    email = Column(String(255), unique=True, nullable=False)
-    password = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False, default="VIEWER")
-    createdAt = Column(DateTime, default=datetime.utcnow)
-    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=False)
+    role = Column(
+        Enum("admin", "moderator", "observer", name="user_roles"),
+        default="observer",
+        nullable=False,
+    )
 
-    translation_versions = relationship("TranslationVersion", back_populates="createdBy")
+    deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
 
+    permissions = Column(JSONB, nullable=True, default=dict)
+    refresh_token = Column(String(512), nullable=True)
+    refresh_token_expires = Column(DateTime, nullable=True)
+    translation_versions = relationship(
+        "TranslationVersion",
+        back_populates="createdBy"
+    )
 
 # -------------------------
 # Language
@@ -85,7 +96,7 @@ class TranslationVersion(Base):
     languageId = Column(Integer, ForeignKey("Language.id"), nullable=False)
     value = Column(String(5000), nullable=False)
     createdAt = Column(DateTime, default=datetime.utcnow)
-    createdById = Column(Integer, ForeignKey("User.id"), nullable=True)
+    createdById = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     key = relationship("TranslationKey", back_populates="versions")
     language = relationship("Language", back_populates="versions")
@@ -159,7 +170,6 @@ class HeaderMenu(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     json = Column(JSON, nullable=False)
     updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
 
 
 # -------------------------

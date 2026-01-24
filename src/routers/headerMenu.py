@@ -1,29 +1,34 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, List
 
 from ..db.session import get_session
 from ..models.models import HeaderMenu
+from ..deps.require_user import require_user, require_editor
 
 router = APIRouter(prefix="/header-menu", tags=["header-menu"])
 
 @router.get("")
-async def get_menu(session: AsyncSession = Depends(get_session)):
+async def get_menu(
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_user),
+):
     row = await session.get(HeaderMenu, 1)
     return row.json if row else []
 
 
-from typing import Any, List
-
 class MenuUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-
     data: List[Any] = Field(alias="json")
 
 
 @router.patch("")
-async def update_menu(payload: MenuUpdate, session: AsyncSession = Depends(get_session)):
+async def update_menu(
+        payload: MenuUpdate,
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_editor),
+):
     row = await session.get(HeaderMenu, 1)
     if not row:
         row = HeaderMenu(id=1, json=payload.data)

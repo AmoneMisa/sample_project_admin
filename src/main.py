@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from .routers import languages, translations, testimonials, headerMenu
+from .routers import languages, translations, testimonials, headerMenu, users, auth
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -23,6 +23,9 @@ app.include_router(languages.router)
 app.include_router(translations.router)
 app.include_router(testimonials.router)
 app.include_router(headerMenu.router)
+app.include_router(users.router)
+app.include_router(auth.router)
+print(app.routes)
 
 from .models.models import Base
 from .db.session import engine

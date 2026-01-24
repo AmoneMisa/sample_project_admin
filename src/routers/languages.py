@@ -3,20 +3,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
+from ..deps.require_user import require_admin
 from ..models.models import Language
 
 router = APIRouter(prefix="/languages", tags=["Languages"])
 
 
+# -----------------------------
+#  Получить все языки
+# -----------------------------
 @router.get("")
-async def get_languages(session: AsyncSession = Depends(get_session)):
+async def get_languages(
+        session: AsyncSession = Depends(get_session),
+):
     result = await session.scalars(select(Language))
     return result.all()
 
 
+# -----------------------------
+#  Получить включённые языки (ПУБЛИЧНО)
+# -----------------------------
 @router.get("/enabled")
 async def get_enabled_languages(
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
 ):
     result = await session.scalars(
         select(Language).where(Language.isEnabled.is_(True))
@@ -24,8 +33,14 @@ async def get_enabled_languages(
     return result.all()
 
 
+# -----------------------------
+#  Инициализация языков (ТОЛЬКО АДМИН)
+# -----------------------------
 @router.get("/init")
-async def init_languages(session: AsyncSession = Depends(get_session)):
+async def init_languages(
+        session: AsyncSession = Depends(get_session),
+        admin=Depends(require_admin),
+):
     languages = [
         {"code": "ru", "name": "Russian"},
         {"code": "en", "name": "English"},
