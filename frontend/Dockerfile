@@ -6,8 +6,6 @@ WORKDIR /app-front
 COPY  package.json package-lock.json ./
 RUN npm ci
 
-COPY admin ./
-
 RUN npm run build
 
 # --- Stage 2: Nginx Runtime ---
