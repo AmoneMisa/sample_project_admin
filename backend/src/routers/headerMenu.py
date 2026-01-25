@@ -9,10 +9,10 @@ from ..deps.require_user import require_user, require_editor
 
 router = APIRouter(prefix="/header-menu", tags=["header-menu"])
 
+
 @router.get("")
 async def get_menu(
-        session: AsyncSession = Depends(get_session),
-        user=Depends(require_user),
+        session: AsyncSession = Depends(get_session)
 ):
     row = await session.get(HeaderMenu, 1)
     return row.json if row else []
