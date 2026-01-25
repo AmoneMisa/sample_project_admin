@@ -1,7 +1,8 @@
+import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
-from passlib.hash import bcrypt
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
 
@@ -21,9 +22,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # -----------------------------
 #  Получение текущего пользователя
 # -----------------------------
-def get_current_user(
+async def get_current_user(
         token: str = Depends(oauth2_scheme),
-        db: Session = Depends(get_session),
+        db: AsyncSession = Depends(get_session),
 ):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -31,7 +32,9 @@ def get_current_user(
     except JWTError:
         raise HTTPException(401, "Неверный токен")
 
-    user = db.query(User).filter(User.id == user_id).first()
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
     if not user:
         raise HTTPException(401, "Пользователь не найден")
 
@@ -45,7 +48,7 @@ def get_current_user(
 #  /auth/me
 # -----------------------------
 @router.get("/me")
-def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: User = Depends(get_current_user)):
     return {
         "id": current_user.id,
         "email": current_user.email,
@@ -56,7 +59,7 @@ def get_me(current_user: User = Depends(get_current_user)):
 
 
 # -----------------------------
-#  Открытая регистрация
+#  Регистрация
 # -----------------------------
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -65,24 +68,31 @@ class RegisterRequest(BaseModel):
 
 
 @router.post("/register")
-def register(
+async def register(
         data: RegisterRequest,
-        db: Session = Depends(get_session),
+        db: AsyncSession = Depends(get_session),
 ):
-    existing = db.query(User).filter(User.email == data.email).first()
+    result = await db.execute(select(User).where(User.email == data.email))
+    existing = result.scalar_one_or_none()
+
     if existing:
         raise HTTPException(400, "Пользователь уже существует")
 
+    password_hash = bcrypt.hashpw(
+        data.password.encode("utf-8"),
+        bcrypt.gensalt()
+    ).decode("utf-8")
+
     user = User(
         email=data.email,
-        password_hash=bcrypt.hash(data.password),
+        password_hash=password_hash,
         full_name=data.full_name,
         role="observer",
     )
 
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
 
     return {"id": user.id, "email": user.email, "role": user.role}
 
@@ -97,26 +107,32 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/login")
-def login(data: LoginRequest, db: Session = Depends(get_session)):
-    user = db.query(User).filter(User.email == data.email).first()
+async def login(data: LoginRequest, db: AsyncSession = Depends(get_session)):
+    result = await db.execute(select(User).where(User.email == data.email))
+    user = result.scalar_one_or_none()
 
-    if not user or not bcrypt.verify(data.password, user.password_hash):
+    if not user:
+        raise HTTPException(401, "Неверный email или пароль")
+
+    if not bcrypt.checkpw(
+            data.password.encode("utf-8"),
+            user.password_hash.encode("utf-8")
+    ):
         raise HTTPException(401, "Неверный email или пароль")
 
     if user.deleted:
         raise HTTPException(403, "Профиль помечен на удаление. Восстановите аккаунт.")
 
-    # access token
     access_token = create_access_token(
         {"id": user.id, "role": user.role},
         remember=data.remember_me,
     )
 
-    # refresh token
     refresh_token, expires = create_refresh_token(user.id)
     user.refresh_token = refresh_token
     user.refresh_token_expires = expires
-    db.commit()
+
+    await db.commit()
 
     return {
         "access_token": access_token,
@@ -138,31 +154,35 @@ SOFT_DELETE_PERIOD_DAYS = 180
 
 
 @router.post("/restore")
-def restore_account(data: RestoreAccountRequest, db: Session = Depends(get_session)):
-    user = db.query(User).filter(User.email == data.email).first()
+async def restore_account(
+        data: RestoreAccountRequest,
+        db: AsyncSession = Depends(get_session),
+):
+    result = await db.execute(select(User).where(User.email == data.email))
+    user = result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(404, "Пользователь не найден")
 
-    if not bcrypt.verify(data.password, user.password_hash):
+    if not bcrypt.checkpw(
+            data.password.encode("utf-8"),
+            user.password_hash.encode("utf-8")
+    ):
         raise HTTPException(401, "Неверный пароль")
 
-    # Если не удалён — просто логиним
     if not user.deleted:
         token = create_access_token({"id": user.id, "role": user.role})
         return {"status": "active", "token": token}
 
-    # Проверяем срок soft-delete
     if user.deleted_at and datetime.utcnow() - user.deleted_at > timedelta(days=SOFT_DELETE_PERIOD_DAYS):
         raise HTTPException(410, "Профиль окончательно удалён")
 
-    # Восстанавливаем
     user.deleted = False
     user.deleted_at = None
-    db.commit()
+
+    await db.commit()
 
     token = create_access_token({"id": user.id, "role": user.role})
-
     return {"status": "restored", "token": token}
 
 
@@ -174,7 +194,7 @@ class RefreshRequest(BaseModel):
 
 
 @router.post("/refresh")
-def refresh_token(data: RefreshRequest, db: Session = Depends(get_session)):
+async def refresh_token(data: RefreshRequest, db: AsyncSession = Depends(get_session)):
     try:
         payload = jwt.decode(data.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
         if payload.get("type") != "refresh":
@@ -183,7 +203,9 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_session)):
     except JWTError:
         raise HTTPException(401, "Неверный refresh токен")
 
-    user = db.query(User).filter(User.id == user_id).first()
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
     if not user:
         raise HTTPException(404, "Пользователь не найден")
 
@@ -193,7 +215,6 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_session)):
     if user.refresh_token_expires < datetime.utcnow():
         raise HTTPException(401, "Refresh токен истёк")
 
-    # выдаём новый access token
     new_access = create_access_token({"id": user.id, "role": user.role})
 
     return {"access_token": new_access}
@@ -203,11 +224,13 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_session)):
 #  Logout
 # -----------------------------
 @router.post("/logout")
-def logout(
+async def logout(
         current_user: User = Depends(get_current_user),
-        db: Session = Depends(get_session),
+        db: AsyncSession = Depends(get_session),
 ):
     current_user.refresh_token = None
     current_user.refresh_token_expires = None
-    db.commit()
+
+    await db.commit()
+
     return {"status": "logged_out"}

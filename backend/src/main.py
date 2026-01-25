@@ -1,18 +1,36 @@
 from fastapi import FastAPI
-from .routers import languages, translations, testimonials, headerMenu, users, auth
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+from .routers import languages, translations, testimonials, headerMenu, users, auth
+from .models.models import Base
+from .db.session import engine
+from .init_admin import init_admin
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    await init_admin()
+
+    yield
+
+    await engine.dispose()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://localhost:3001",
-        "http://127.0.0.1:3002",
-        "http://localhost:3002",
+        "http://localhost:80",
+        "http://127.0.0.1:80",
+        "http://localhost",
+        "http://127.0.0.1",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -25,18 +43,3 @@ app.include_router(testimonials.router)
 app.include_router(headerMenu.router)
 app.include_router(users.router)
 app.include_router(auth.router)
-print(app.routes)
-
-from .models.models import Base
-from .db.session import engine
-
-@app.on_event("startup")
-async def startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-@app.on_event("shutdown")
-async def shutdown():
-    await engine.dispose()
-
-

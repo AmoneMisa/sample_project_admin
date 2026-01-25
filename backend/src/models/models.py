@@ -4,7 +4,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..db.base import Base
-from sqlalchemy.dialects.postgresql import JSONB
 
 # -------------------------
 # User
@@ -25,7 +24,7 @@ class User(Base):
     deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
 
-    permissions = Column(JSONB, nullable=True, default=dict)
+    permissions = Column(JSON, nullable=True, default=dict)
     refresh_token = Column(String(512), nullable=True)
     refresh_token_expires = Column(DateTime, nullable=True)
     translation_versions = relationship(

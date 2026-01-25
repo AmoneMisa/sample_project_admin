@@ -1,0 +1,68 @@
+services:
+  mariadb:
+    image: mariadb:12.2-rc
+    container_name: mariadb
+    restart: always
+    env_file:
+      - ./backend/.env
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend
+    restart: always
+    env_file:
+      - ./backend/.env
+    depends_on:
+      mariadb:
+        condition:
+          service_healthy
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    restart: always
+    environment:
+      REACT_APP_API_URL: "/api"
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - app-network
+
+  other_service:
+    image: alpine:latest
+    container_name: other_service
+    command: [ "sh", "-c", "apk add curl && sleep infinity" ]
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+volumes:
+  mariadb_data:
+
+networks:
+  app-network:
+    driver: bridge
