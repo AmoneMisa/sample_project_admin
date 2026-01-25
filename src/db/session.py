@@ -1,8 +1,7 @@
 from typing import Any, AsyncGenerator
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-
-DATABASE_URL = "mysql+aiomysql://ai_user:StrongPassword123@localhost:3306/sampleProjectDB"
+from ..config import DATABASE_URL
 
 engine = create_async_engine(
     DATABASE_URL,
