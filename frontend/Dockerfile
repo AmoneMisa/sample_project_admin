@@ -1,5 +1,5 @@
 # --- Stage 1: Build ---
-FROM node:22-alpine AS builder
+FROM node:22 AS builder
 
 WORKDIR /app-front
 
@@ -11,7 +11,7 @@ COPY . .
 RUN npm run build
 
 # --- Stage 2: Nginx Runtime ---
-FROM nginx:1.25-alpine
+FROM nginx:1.25
 
 COPY --from=builder /app-front/build /usr/share/nginx/html
 COPY ../nginx.conf /etc/nginx/conf.d/default.conf
