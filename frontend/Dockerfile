@@ -3,7 +3,7 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app-front
 
-COPY admin/package.json admin/package-lock.json ./
+COPY  package.json package-lock.json ./
 RUN npm ci
 
 COPY admin ./
