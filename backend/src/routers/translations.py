@@ -1,17 +1,17 @@
 import codecs
 import json
-import os
+
 from ..db.session import get_session
 from ..deps.require_user import (
-    require_permission
+    require_permission, require_editor
 )
 from ..models.models import Language, TranslationKey, TranslationValue
 from ..utils.flatten_tree import flatten_tree
 from ..utils.translation_tree import build_tree
-from fastapi import APIRouter, Query, Depends, HTTPException
+from fastapi import APIRouter, Query, Depends, HTTPException, UploadFile, File
 from pathlib import Path
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Union
 
@@ -85,36 +85,29 @@ def decode_unicode(value):
     return value
 
 
-@router.get("/import")
+@router.post("/import")
 async def import_translations(
+        files: list[UploadFile] = File(...),
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("translations", "update")),
 ):
-    files = os.listdir(NUXT_LOCALES_PATH)
-
     for file in files:
-        if not file.endswith(".json"):
-            continue
+        content = await file.read()
+        tree = json.loads(content)
 
-        lang_code = file.replace(".json", "")
+        # flatten JSON
+        flat = flatten_tree(tree)
 
-        lang = await session.scalar(
-            select(Language).where(Language.code == lang_code)
-        )
+        # определить язык из имени файла или из содержимого
+        lang_code = Path(file.filename).stem
+        lang = await session.scalar(select(Language).where(Language.code == lang_code))
         if not lang:
             continue
-
-        with open(os.path.join(NUXT_LOCALES_PATH, file), "r", encoding="utf-8") as f:
-            tree = json.load(f)
-
-        flat = flatten_tree(tree)
 
         for key_str, value in flat.items():
             value = decode_unicode(value)
 
-            key = await session.scalar(
-                select(TranslationKey).where(TranslationKey.key == key_str)
-            )
+            key = await session.scalar(select(TranslationKey).where(TranslationKey.key == key_str))
             if not key:
                 key = TranslationKey(key=key_str)
                 session.add(key)
