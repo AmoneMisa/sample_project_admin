@@ -428,7 +428,7 @@ export default function Index() {
                         key: "key",
                         title: `Ключ ${sortAsc ? "▲" : "▼"}`,
                         render: (value) => (
-                            <span className="translation-tree__cell-text table__cell-text">{value}</span>
+                            {value}
                         ),
                     },
                     ...languages.map((lang) => ({
@@ -440,86 +440,104 @@ export default function Index() {
                             const isEditing = editing.key === row.key && editing.lang === lang.code;
 
                             return (
-                                <span className="translation-tree__cell-text table__cell-text">
-            {canEdit && isEditing ? (
-                <div style={{position: "relative"}}>
-                <textarea
-                    ref={editingInputRef}
-                    autoFocus
-                    defaultValue={val}
-                    onBlur={(e) => {
-                        if (ignoreBlur) {
-                            setIgnoreBlur(false);
-                            return;
-                        }
-                        const newValue = e.target.value;
-                        if (newValue !== editing.initial) {
-                            saveValue(row.key, lang.code, newValue);
-                        }
-                        setEditing({key: null, lang: null, initial: ""});
-                    }}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
+                                <div>
+                                    {canEdit && isEditing ? (
+                                        <div style={{position: "relative"}}>
+                    <textarea
+                        ref={editingInputRef}
+                        autoFocus
+                        defaultValue={val}
+                        onBlur={(e) => {
+                            if (ignoreBlur) {
+                                setIgnoreBlur(false);
+                                return;
+                            }
                             const newValue = e.target.value;
                             if (newValue !== editing.initial) {
                                 saveValue(row.key, lang.code, newValue);
                             }
                             setEditing({key: null, lang: null, initial: ""});
-                        }
-                    }}
-                    className="input input_icons textarea"
-                />
-                    <div style={{position: "absolute", right: 8, bottom: "-8px", display: "flex", gap: 2}}>
-                        <button
-                            className="input-control"
-                            onMouseDown={(e) => {
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
-                                setIgnoreBlur(true);
-                            }}
-                            onClick={() => {
-                                const v = editingInputRef.current.value;
-                                if (v !== editing.initial) {
-                                    saveValue(row.key, lang.code, v);
+                                const newValue = e.target.value;
+                                if (newValue !== editing.initial) {
+                                    saveValue(row.key, lang.code, newValue);
                                 }
                                 setEditing({key: null, lang: null, initial: ""});
-                            }}
-                        >
-                            <FiSave size={16}/>
-                        </button>
-                        <button
-                            className="input-control"
-                            onMouseDown={(e) => {
-                                e.preventDefault();
-                                setIgnoreBlur(true);
-                            }}
-                            onClick={() => setEmojiPickerFor({key: row.key, lang: lang.code})}
-                        >
-                            <FiSmile size={16}/>
-                        </button>
-                    </div>
-                    {emojiPickerFor &&
-                        emojiPickerFor.key === row.key &&
-                        emojiPickerFor.lang === lang.code && (
-                            <EmojiPickerPopup
-                                onSelect={(emoji) => {
-                                    const input = editingInputRef.current;
-                                    if (input) {
-                                        const start = input.selectionStart || 0;
-                                        const end = input.selectionEnd || 0;
-                                        const v = input.value || "";
-                                        input.value = v.slice(0, start) + emoji + v.slice(end);
-                                        input.dispatchEvent(new Event("input", {bubbles: true}));
-                                    }
-                                    setEmojiPickerFor(null);
-                                }}
-                            />
-                        )}
-                </div>
-            ) : (
-                val
-            )}
-          </span>
+                            }
+                        }}
+                        className="input input_icons textarea"
+                    />
+
+                                            <div
+                                                style={{
+                                                    position: "absolute",
+                                                    right: 8,
+                                                    bottom: "-8px",
+                                                    display: "flex",
+                                                    gap: 2
+                                                }}
+                                            >
+                                                <button
+                                                    className="input-control"
+                                                    onMouseDown={(e) => {
+                                                        e.preventDefault();
+                                                        setIgnoreBlur(true);
+                                                    }}
+                                                    onClick={() => {
+                                                        const v = editingInputRef.current.value;
+                                                        if (v !== editing.initial) {
+                                                            saveValue(row.key, lang.code, v);
+                                                        }
+                                                        setEditing({key: null, lang: null, initial: ""});
+                                                    }}
+                                                >
+                                                    <FiSave size={16}/>
+                                                </button>
+
+                                                <button
+                                                    className="input-control"
+                                                    onMouseDown={(e) => {
+                                                        e.preventDefault();
+                                                        setIgnoreBlur(true);
+                                                    }}
+                                                    onClick={() =>
+                                                        setEmojiPickerFor({key: row.key, lang: lang.code})
+                                                    }
+                                                >
+                                                    <FiSmile size={16}/>
+                                                </button>
+                                            </div>
+
+                                            {emojiPickerFor &&
+                                                emojiPickerFor.key === row.key &&
+                                                emojiPickerFor.lang === lang.code && (
+                                                    <EmojiPickerPopup
+                                                        onSelect={(emoji) => {
+                                                            const input = editingInputRef.current;
+                                                            if (input) {
+                                                                const start = input.selectionStart || 0;
+                                                                const end = input.selectionEnd || 0;
+                                                                const v = input.value || "";
+                                                                input.value =
+                                                                    v.slice(0, start) +
+                                                                    emoji +
+                                                                    v.slice(end);
+                                                                input.dispatchEvent(
+                                                                    new Event("input", {bubbles: true})
+                                                                );
+                                                            }
+                                                            setEmojiPickerFor(null);
+                                                        }}
+                                                    />
+                                                )}
+                                        </div>
+                                    ) : (
+                                        val
+                                    )}
+                                </div>
                             );
                         },
                     })),
