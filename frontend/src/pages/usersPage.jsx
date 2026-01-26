@@ -4,9 +4,9 @@ import LabeledSelect from "../components/LabeledSelect";
 import {useAuth} from "../hooks/authContext";
 import CustomTable from "../components/CustomTable";
 
-const API_URL = process.env.REACT_APP_API_URL;
-
 export default function UsersPage() {
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
+
     const {accessToken} = useAuth();
 
     const [users, setUsers] = useState([]);

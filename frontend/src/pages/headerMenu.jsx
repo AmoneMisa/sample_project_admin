@@ -6,8 +6,6 @@ import MenuItemDialog from "../components/MenuItemDialog";
 import {useAuth} from "../hooks/authContext";
 import CustomTable from "../components/CustomTable";
 
-const API_URL = process.env.REACT_APP_API_URL;
-
 function isValidKey(str) {
     return /^[a-zA-Z0-9._-]+$/.test(str);
 }
@@ -21,6 +19,8 @@ function inheritHref(parentHref, childKey) {
 }
 
 export default function HeaderMenu() {
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
+
     const [menu, setMenu] = useState([]);
     const [editing, setEditing] = useState(null);
     const [creating, setCreating] = useState(false);

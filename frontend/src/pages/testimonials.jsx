@@ -8,9 +8,9 @@ import {useAuditLogList} from "../hooks/useAuditLogList";
 import {useAuth} from "../hooks/authContext";
 import CustomTable from "../components/CustomTable";
 
-const API_URL = process.env.REACT_APP_API_URL;
-
 export default function Testimonials() {
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
+
     const [items, setItems] = useState([]);
     const [editing, setEditing] = useState(null);
     const [creating, setCreating] = useState(false);

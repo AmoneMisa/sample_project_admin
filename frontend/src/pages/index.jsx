@@ -12,9 +12,9 @@ import Checkbox from "../components/Checkbox";
 import {useAuth} from "../hooks/authContext";
 import CustomTable from "../components/CustomTable";
 
-const API_URL = process.env.REACT_APP_API_URL;
-
 export default function Index() {
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
+
     const [languages, setLanguages] = useState([]);
     const [search, setSearch] = useState("");
     const [sortAsc, setSortAsc] = useState(true);

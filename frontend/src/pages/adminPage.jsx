@@ -6,8 +6,6 @@ import Checkbox from "../components/Checkbox";
 import LabeledFileInput from "../components/LabeledFileInput";
 import LabeledInput from "../components/LabeledInput";
 
-const API_URL = process.env.REACT_APP_API_URL;
-
 // ISO 639-1 словарь
 const ISO_LANGUAGES = {
     en: "English",
@@ -38,6 +36,8 @@ const ISO_LANGUAGES = {
 };
 
 export default function AdminPage() {
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
+
     const {user, accessToken} = useAuth();
     const {showToast} = useToast();
 

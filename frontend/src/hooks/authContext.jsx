@@ -2,11 +2,11 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 const AuthContext = createContext(null);
-const API_URL = process.env.REACT_APP_API_URL;
+
 
 export function AuthProvider({ children }) {
     const navigate = useNavigate();
-
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
     const [user, setUser] = useState(null);
     const [accessToken, setAccessToken] = useState(null);
     const [refreshToken, setRefreshToken] = useState(null);

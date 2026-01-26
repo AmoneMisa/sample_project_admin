@@ -3,9 +3,9 @@ import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../hooks/authContext";
 import LabeledInput from "../components/LabeledInput";
 
-const API_URL = process.env.REACT_APP_API_URL;
-
 export default function RegisterPage() {
+    const API_URL = process.env.REACT_APP_API_URL || "/api";
+
     const { login, user, accessToken, loading } = useAuth();
     const navigate = useNavigate();
 
