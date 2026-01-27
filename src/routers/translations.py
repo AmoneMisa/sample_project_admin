@@ -1,20 +1,21 @@
 import codecs
 import json
+from pathlib import Path
+from typing import List, Union
+
+from fastapi import APIRouter, Query, Depends, HTTPException, UploadFile, File
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import (
-    require_permission, require_editor
+    require_permission
 )
 from ..models.models import Language, TranslationKey, TranslationValue
 from ..utils.flatten_tree import flatten_tree
 from ..utils.redis_client import get_redis
 from ..utils.translation_tree import build_tree
-from fastapi import APIRouter, Query, Depends, HTTPException, UploadFile, File
-from pathlib import Path
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Union
 
 router = APIRouter(prefix="/translations", tags=["Translations"])
 
