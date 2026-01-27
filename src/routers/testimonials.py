@@ -1,17 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
 
 from ..db.session import get_session
-from ..models.models import Testimonial
 from ..deps.require_user import require_permission
+from ..models.models import Testimonial
+from ..utils.redis_client import get_redis
 
 router = APIRouter(prefix="/testimonials", tags=["Testimonials"])
 
 
 # -----------------------------
-#  Получить отзывы (ПУБЛИЧНО)
+#  Получить отзывы
 # -----------------------------
 @router.get("")
 async def get_testimonials(
@@ -24,7 +25,7 @@ async def get_testimonials(
 
 
 # -----------------------------
-#  Создать отзыв (moderator/admin или кастомное право)
+#  Создать отзыв
 # -----------------------------
 class TestimonialCreate(BaseModel):
     name: str
@@ -47,11 +48,16 @@ async def create_testimonial(
     session.add(t)
     await session.commit()
     await session.refresh(t)
+
+    # --- invalidate Redis cache ---
+    redis = get_redis()
+    await redis.delete("testimonials")
+
     return t
 
 
 # -----------------------------
-#  Обновить отзыв (moderator/admin или кастомное право)
+#  Обновить отзыв
 # -----------------------------
 class TestimonialUpdate(BaseModel):
     name: str | None = None
@@ -79,11 +85,16 @@ async def update_testimonial(
         setattr(t, k, v)
 
     await session.commit()
+
+    # --- invalidate Redis cache ---
+    redis = get_redis()
+    await redis.delete("testimonials")
+
     return t
 
 
 # -----------------------------
-#  Удалить отзыв (moderator/admin или кастомное право)
+#  Удалить отзыв
 # -----------------------------
 @router.delete("/{id}")
 async def delete_testimonial(
@@ -97,11 +108,16 @@ async def delete_testimonial(
 
     await session.delete(t)
     await session.commit()
+
+    # --- invalidate Redis cache ---
+    redis = get_redis()
+    await redis.delete("testimonials")
+
     return {"status": "deleted"}
 
 
 # -----------------------------
-#  Массовая смена порядка (moderator/admin или кастомное право)
+#  Массовая смена порядка
 # -----------------------------
 class OrderItem(BaseModel):
     id: int
@@ -123,5 +139,11 @@ async def reorder_testimonials(
             .where(Testimonial.id == item.id)
             .values(order=item.order)
         )
+
     await session.commit()
+
+    # --- invalidate Redis cache ---
+    redis = get_redis()
+    await redis.delete("testimonials")
+
     return {"status": "reordered"}

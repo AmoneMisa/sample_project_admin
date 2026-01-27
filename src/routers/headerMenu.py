@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, List
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
+from ..deps.require_user import require_editor
 from ..models.models import HeaderMenu
-from ..deps.require_user import require_user, require_editor
+from ..utils.redis_client import get_redis
 
 router = APIRouter(prefix="/header-menu", tags=["header-menu"])
 
@@ -37,4 +38,8 @@ async def update_menu(
         row.json = payload.data
 
     await session.commit()
+
+    redis = get_redis()
+    await redis.delete("header-menu")
+
     return row.json

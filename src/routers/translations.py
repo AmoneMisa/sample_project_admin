@@ -7,6 +7,7 @@ from ..deps.require_user import (
 )
 from ..models.models import Language, TranslationKey, TranslationValue
 from ..utils.flatten_tree import flatten_tree
+from ..utils.redis_client import get_redis
 from ..utils.translation_tree import build_tree
 from fastapi import APIRouter, Query, Depends, HTTPException, UploadFile, File
 from pathlib import Path
@@ -131,6 +132,10 @@ async def import_translations(
             )
 
     await session.commit()
+
+    redis = get_redis()
+    await redis.delete(f"translations:{lang_code}")
+
     return {"status": "imported"}
 
 
@@ -185,6 +190,11 @@ async def update_translation(
         )
 
     await session.commit()
+
+
+    redis = get_redis()
+    await redis.delete(f"translations:{payload.lang}")
+
     return {"status": "updated"}
 
 
@@ -193,7 +203,6 @@ async def update_translation(
 # ---------------------------------------------------------
 class DeletePayload(BaseModel):
     key: str
-
 
 @router.delete("/delete")
 async def delete_translation_key(
@@ -217,8 +226,15 @@ async def delete_translation_key(
     await session.delete(key_row)
     await session.commit()
 
-    return {"status": "deleted", "key": payload.key}
+    redis = get_redis()
 
+    langs = await session.execute(select(Language.code))
+    langs = [row[0] for row in langs.all()]
+
+    for lang in langs:
+        await redis.delete(f"translations:{lang}")
+
+    return {"status": "deleted", "key": payload.key}
 
 # ---------------------------------------------------------
 # PROTECTED PATCH /translations/bulk-update
@@ -291,6 +307,10 @@ async def bulk_update_translations(
         updated.append({"key": item.key, "lang": item.lang})
 
     await session.commit()
+    redis = get_redis()
+    langs = {item.lang for item in payload.items}
+    for lang in langs:
+        await redis.delete(f"translations:{lang}")
 
     return {"status": "updated", "count": len(updated), "items": updated}
 
@@ -339,4 +359,8 @@ async def create_translation(
             )
 
     await session.commit()
+
+    redis = get_redis()
+    for lang_code in payload.values.keys():
+        await redis.delete(f"translations:{lang_code}")
     return {"status": "created", "key": payload.key}
