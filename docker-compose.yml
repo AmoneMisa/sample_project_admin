@@ -1,14 +1,11 @@
 services:
   mariadb:
-    image: mariadb:12.2-rc
-    container_name: mariadb
-    restart: always
+    image: mariadb:12.1.2
+    restart: unless-stopped
     env_file:
       - ./db.env
     volumes:
       - mariadb_data:/var/lib/mysql
-    networks:
-      - app-network
     healthcheck:
       test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
       start_period: 10s
@@ -17,50 +14,40 @@ services:
       retries: 3
     environment:
       MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: backend
-    restart: always
+    restart: unless-stopped
     env_file:
       - ./db.env
     depends_on:
       mariadb:
         condition:
           service_healthy
-    networks:
-      - app-network
 
   admin-frontend:
     build:
       context: ./admin-frontend
-      dockerfile: Dockerfile
       args:
         REACT_APP_API_URL: "/api"
-    container_name: admin-frontend
-    restart: always
+    restart: unless-stopped
     environment:
       REACT_APP_API_URL: "/api"
     depends_on:
       - backend
-    networks:
-      - app-network
 
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-    container_name: frontend
-    restart: always
+    environment:
+      REDIS_URL: "redis://redis:6379"
+    restart: unless-stopped
     depends_on:
       - backend
-    networks:
-      - app-network
 
   nginx:
     image: nginx:latest
-    container_name: nginx
     ports:
       - "80:80"
     volumes:
@@ -69,13 +56,14 @@ services:
       - backend
       - admin-frontend
       - frontend
-    networks:
-      - app-network
 
+  redis:
+    image: redis:8.4.0
+    restart: unless-stopped
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - redis_data:/data
 
 volumes:
   mariadb_data:
-
-networks:
-  app-network:
-    driver: bridge
+  redis_data:
