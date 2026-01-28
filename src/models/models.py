@@ -5,6 +5,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..db.base import Base
 
+
 # -------------------------
 # User
 # -------------------------
@@ -31,6 +32,7 @@ class User(Base):
         "TranslationVersion",
         back_populates="createdBy"
     )
+
 
 # -------------------------
 # Language
@@ -210,5 +212,79 @@ class Contact(Base):
     type = Column(String(50), nullable=False)
     label = Column(String(255), nullable=True)
     value = Column(String(500), nullable=False)
+    order = Column(Integer, default=0)
+    isVisible = Column(Boolean, default=True)
+
+
+# -------------------------
+# Offer Card
+# -------------------------
+class OfferCard(Base):
+    __tablename__ = "OfferCards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, nullable=False)  # basic / premium / enterprise
+    name = Column(String, nullable=False)  # translation key
+    description = Column(String, nullable=False)  # translation key
+    monthly = Column(String, nullable=False)  # translation key
+    yearly = Column(String, nullable=False)  # translation key
+    features = Column(String, nullable=False)  # translation key (list)
+    highlight = Column(Boolean, default=False)
+    order = Column(Integer, default=0)
+    isVisible = Column(Boolean, default=True)
+
+
+# -------------------------
+# Footer Block
+# -------------------------
+class FooterBlock(Base):
+    __tablename__ = "FooterBlock"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    type = Column(String(50), nullable=False)  # menu, newsletter, logos, contacts, footerInfo
+    titleKey = Column(String(255), nullable=True)  # translation key (для menu)
+    order = Column(Integer, default=0)
+    isVisible = Column(Boolean, default=True)
+
+    # newsletter config
+    allowedDomains = Column(JSON, nullable=True)  # ["gmail.com", "yahoo.com"]
+
+    # logos config
+    descriptionKey = Column(String(255), nullable=True)  # translation key
+
+    items = relationship("FooterItem", back_populates="block", cascade="all, delete")
+
+
+class FooterItem(Base):
+    __tablename__ = "FooterItem"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    blockId = Column(Integer, ForeignKey("FooterBlock.id"), nullable=False)
+
+    type = Column(String(50), nullable=False)
+    # link → labelKey + href
+    # contact → labelKey (email/phone/address)
+    # logo → image + labelKey
+    # social → href + icon
+
+    labelKey = Column(String(255), nullable=True)  # translation key
+    href = Column(String(500), nullable=True)
+    image = Column(String(500), nullable=True)  # URL загруженного файла
+    value = Column(String(500), nullable=True)  # email/phone/address (если нужно хранить raw)
+    icon = Column(String(100), nullable=True)  # соцсети (i-lucide-twitter)
+
+    order = Column(Integer, default=0)
+    isVisible = Column(Boolean, default=True)
+
+    block = relationship("FooterBlock", back_populates="items")
+
+
+class FeatureCard(Base):
+    __tablename__ = "FeatureCard"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    image = Column(String(500), nullable=True)  # путь к изображению
+    titleKey = Column(String(255), nullable=False)  # переводимый ключ
+    descriptionKey = Column(String(255), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
