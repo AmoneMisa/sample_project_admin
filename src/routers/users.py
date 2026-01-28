@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import require_admin
@@ -11,62 +11,66 @@ from ..models.models import User
 
 router = APIRouter(prefix="/users", tags=["users"])
 
+SOFT_DELETE_PERIOD_DAYS = 180
 
-# -----------------------------
-#  Список пользователей (только админ)
-# -----------------------------
-@router.get("/")
+
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+async def get_user_or_404(db: AsyncSession, user_id: int) -> User:
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "Пользователь не найден")
+    return user
+
+
+def ensure_not_admin(user: User):
+    if user.role == "admin":
+        raise HTTPException(400, "Нельзя менять данные администратора")
+
+
+# ---------------------------------------------------------
+# GET /users — список + фильтры
+# ---------------------------------------------------------
+@router.get("")
 async def list_users(
+        role: str | None = None,
+        email: str | None = None,
+        deleted: bool | None = None,
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
-    result = await db.execute(select(User))
+    query = select(User)
+
+    if role is not None:
+        query = query.where(User.role == role)
+
+    if email is not None:
+        query = query.where(User.email == email)
+
+    if deleted is not None:
+        query = query.where(User.deleted == deleted)
+
+    result = await db.execute(query)
     return result.scalars().all()
 
 
-@router.get("/by-role/{role}")
-async def list_users_by_role(
-        role: str,
-        db: AsyncSession = Depends(get_session),
-        admin: User = Depends(require_admin),
-):
-    result = await db.execute(select(User).where(User.role == role))
-    return result.scalars().all()
-
-
-@router.get("/by-id/{user_id}")
+# ---------------------------------------------------------
+# GET /users/{id}
+# ---------------------------------------------------------
+@router.get("/{user_id}")
 async def get_user_by_id(
         user_id: int,
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
-
-    return user
+    return await get_user_or_404(db, user_id)
 
 
-@router.get("/by-email")
-async def get_user_by_email(
-        email: str = Query(...),
-        db: AsyncSession = Depends(get_session),
-        admin: User = Depends(require_admin),
-):
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
-
-    return user
-
-
-# -----------------------------
-#  Смена роли (только админ)
-# -----------------------------
+# ---------------------------------------------------------
+# POST /users/{id}/role — смена роли
+# ---------------------------------------------------------
 class ChangeRoleRequest(BaseModel):
     role: str  # "observer" или "moderator"
 
@@ -81,14 +85,8 @@ async def change_role(
     if data.role not in ("observer", "moderator"):
         raise HTTPException(400, "Недопустимая роль")
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
-
-    if user.role == "admin":
-        raise HTTPException(400, "Нельзя менять роль администратора")
+    user = await get_user_or_404(db, user_id)
+    ensure_not_admin(user)
 
     user.role = data.role
     await db.commit()
@@ -97,26 +95,17 @@ async def change_role(
     return {"id": user.id, "role": user.role}
 
 
-# -----------------------------
-#  Soft delete (только админ)
-# -----------------------------
-SOFT_DELETE_PERIOD_DAYS = 180
-
-
+# ---------------------------------------------------------
+# POST /users/{id}/delete — soft delete
+# ---------------------------------------------------------
 @router.post("/{user_id}/delete")
 async def soft_delete_user(
         user_id: int,
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
-
-    if user.role == "admin":
-        raise HTTPException(400, "Нельзя удалить администратора")
+    user = await get_user_or_404(db, user_id)
+    ensure_not_admin(user)
 
     user.deleted = True
     user.deleted_at = datetime.utcnow()
@@ -125,20 +114,16 @@ async def soft_delete_user(
     return {"status": "marked_deleted"}
 
 
-# -----------------------------
-#  Restore (только админ)
-# -----------------------------
+# ---------------------------------------------------------
+# POST /users/{id}/restore — восстановление
+# ---------------------------------------------------------
 @router.post("/{user_id}/restore")
 async def restore_user(
         user_id: int,
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
+    user = await get_user_or_404(db, user_id)
 
     if not user.deleted:
         return {"status": "not_deleted"}
@@ -153,9 +138,9 @@ async def restore_user(
     return {"status": "restored"}
 
 
-# -----------------------------
-#  Обновление прав (только админ)
-# -----------------------------
+# ---------------------------------------------------------
+# POST /users/{id}/permissions — обновление прав
+# ---------------------------------------------------------
 class PermissionsUpdateRequest(BaseModel):
     permissions: dict
 
@@ -167,14 +152,8 @@ async def update_permissions(
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
-
-    if user.role == "admin":
-        raise HTTPException(400, "Нельзя менять права администратора")
+    user = await get_user_or_404(db, user_id)
+    ensure_not_admin(user)
 
     user.permissions = data.permissions
 

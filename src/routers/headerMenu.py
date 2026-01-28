@@ -11,6 +11,9 @@ from ..utils.redis_client import get_redis
 router = APIRouter(prefix="/header-menu", tags=["header-menu"])
 
 
+# ---------------------------------------------------------
+# GET /header-menu
+# ---------------------------------------------------------
 @router.get("")
 async def get_menu(
         session: AsyncSession = Depends(get_session)
@@ -19,6 +22,9 @@ async def get_menu(
     return row.json if row else []
 
 
+# ---------------------------------------------------------
+# PATCH /header-menu
+# ---------------------------------------------------------
 class MenuUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     data: List[Any] = Field(alias="json")
@@ -31,6 +37,7 @@ async def update_menu(
         user=Depends(require_editor),
 ):
     row = await session.get(HeaderMenu, 1)
+
     if not row:
         row = HeaderMenu(id=1, json=payload.data)
         session.add(row)

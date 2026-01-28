@@ -21,7 +21,7 @@ async def get_testimonials(
     rows = await session.execute(
         select(Testimonial).order_by(Testimonial.order.asc(), Testimonial.id.asc())
     )
-    return [row for row in rows.scalars().all()]
+    return rows.scalars().all()
 
 
 # -----------------------------
@@ -49,7 +49,6 @@ async def create_testimonial(
     await session.commit()
     await session.refresh(t)
 
-    # --- invalidate Redis cache ---
     redis = get_redis()
     await redis.delete("testimonials")
 
@@ -86,7 +85,6 @@ async def update_testimonial(
 
     await session.commit()
 
-    # --- invalidate Redis cache ---
     redis = get_redis()
     await redis.delete("testimonials")
 
@@ -109,7 +107,6 @@ async def delete_testimonial(
     await session.delete(t)
     await session.commit()
 
-    # --- invalidate Redis cache ---
     redis = get_redis()
     await redis.delete("testimonials")
 
@@ -122,6 +119,7 @@ async def delete_testimonial(
 class OrderItem(BaseModel):
     id: int
     order: int
+
 
 class BulkOrderUpdate(BaseModel):
     items: list[OrderItem]
@@ -142,7 +140,6 @@ async def reorder_testimonials(
 
     await session.commit()
 
-    # --- invalidate Redis cache ---
     redis = get_redis()
     await redis.delete("testimonials")
 
