@@ -223,12 +223,12 @@ class OfferCard(Base):
     __tablename__ = "OfferCards"
 
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String, unique=True, nullable=False)  # basic / premium / enterprise
-    name = Column(String, nullable=False)  # translation key
-    description = Column(String, nullable=False)  # translation key
-    monthly = Column(String, nullable=False)  # translation key
-    yearly = Column(String, nullable=False)  # translation key
-    features = Column(String, nullable=False)  # translation key (list)
+    key = Column(String(255), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(String(255), nullable=False)
+    monthly = Column(String(255), nullable=False)
+    yearly = Column(String(255), nullable=False)
+    features = Column(String(500), nullable=False)
     highlight = Column(Boolean, default=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
