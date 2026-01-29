@@ -18,4 +18,4 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            bash /srv/project/deploy.sh backend
+            bash /opt/myproject/deploy.sh backend
