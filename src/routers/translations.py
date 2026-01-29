@@ -22,23 +22,57 @@ router = APIRouter(prefix="/translations", tags=["Translations"])
 # ---------------------------------------------------------
 @router.get("")
 async def get_translations(
-        lang: str = Query(...),
+        key: str | None = None,
+        lang: str | None = None,
         session: AsyncSession = Depends(get_session)
 ):
-    values = await session.execute(
-        select(TranslationValue, TranslationKey)
-        .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
-        .join(Language, Language.id == TranslationValue.languageId)
-        .where(Language.code == lang)
-    )
+    # Если указан конкретный язык → вернуть только его
+    if lang:
+        values = await session.execute(
+            select(TranslationValue, TranslationKey)
+            .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
+            .join(Language, Language.id == TranslationValue.languageId)
+            .where(Language.code == lang)
+        )
+
+        result = {}
+        for value, key_obj in values.all():
+            try:
+                parsed = json.loads(value.value)
+                result[key_obj.key] = parsed
+            except:
+                result[key_obj.key] = value.value
+        return result
+
+    # Если язык НЕ указан → вернуть ВСЕ языки
+    # (именно это нужно твоему фронтенду)
+    languages = await session.execute(select(Language))
+    languages = [l[0].code for l in languages.all()]
 
     result = {}
-    for value, key in values.all():
-        try:
-            parsed = json.loads(value.value)
-            result[key.key] = parsed
-        except:
-            result[key.key] = value.value
+
+    for code in languages:
+        values = await session.execute(
+            select(TranslationValue, TranslationKey)
+            .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
+            .join(Language, Language.id == TranslationValue.languageId)
+            .where(Language.code == code)
+        )
+
+        lang_map = {}
+        for value, key_obj in values.all():
+            try:
+                parsed = json.loads(value.value)
+                lang_map[key_obj.key] = parsed
+            except:
+                lang_map[key_obj.key] = value.value
+
+        result[code] = lang_map
+
+    # Если указан key → вернуть только его
+    if key:
+        return {code: result[code].get(key, "") for code in result}
+
     return result
 
 
@@ -47,18 +81,69 @@ async def get_translations(
 # ---------------------------------------------------------
 @router.get("/structured")
 async def get_structured_translations(
-        lang: str = Query(...),
+        key: str | None = None,
+        lang: str | None = None,
         session: AsyncSession = Depends(get_session)
 ):
-    values = await session.execute(
-        select(TranslationValue, TranslationKey)
-        .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
-        .join(Language, Language.id == TranslationValue.languageId)
-        .where(Language.code == lang)
-    )
+    # ---------------------------------------------------------
+    # 1. Если указан язык → вернуть дерево только для него
+    # ---------------------------------------------------------
+    if lang:
+        values = await session.execute(
+            select(TranslationValue, TranslationKey)
+            .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
+            .join(Language, Language.id == TranslationValue.languageId)
+            .where(Language.code == lang)
+        )
 
-    flat = {key.key: value.value for value, key in values.all()}
-    return build_tree(flat)
+        flat = {}
+        for value, key_obj in values.all():
+            try:
+                flat[key_obj.key] = json.loads(value.value)
+            except:
+                flat[key_obj.key] = value.value
+
+        tree = build_tree(flat)
+
+        # Если указан key → вернуть только его ветку
+        if key:
+            return tree.get(key, {})
+
+        return tree
+
+    # ---------------------------------------------------------
+    # 2. Если язык НЕ указан → вернуть дерево для всех языков
+    # ---------------------------------------------------------
+    languages = await session.execute(select(Language))
+    languages = [l[0].code for l in languages.all()]
+
+    result = {}
+
+    for code in languages:
+        values = await session.execute(
+            select(TranslationValue, TranslationKey)
+            .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
+            .join(Language, Language.id == TranslationValue.languageId)
+            .where(Language.code == code)
+        )
+
+        flat = {}
+        for value, key_obj in values.all():
+            try:
+                flat[key_obj.key] = json.loads(value.value)
+            except:
+                flat[key_obj.key] = value.value
+
+        tree = build_tree(flat)
+
+        # Если указан key → вернуть только его ветку
+        if key:
+            result[code] = tree.get(key, {})
+        else:
+            result[code] = tree
+
+    return result
+
 
 
 # ---------------------------------------------------------
