@@ -206,3 +206,11 @@ async def delete_footer_item(
     await redis.delete("footer")
 
     return {"status": "deleted"}
+
+
+@router.get("/{blockId}/items")
+async def list_footer_items(blockId: int, session: AsyncSession = Depends(get_session)):
+    rows = await session.execute(
+        select(FooterItem).where(FooterItem.blockId == blockId).order_by(FooterItem.order.asc())
+    )
+    return rows.scalars().all()
