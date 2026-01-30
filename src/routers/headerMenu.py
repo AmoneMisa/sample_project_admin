@@ -2,6 +2,7 @@ from typing import Any, List
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from ..db.session import get_session
 from ..deps.require_user import require_editor
@@ -18,8 +19,9 @@ router = APIRouter(prefix="/header-menu", tags=["header-menu"])
 async def get_menu(
         session: AsyncSession = Depends(get_session)
 ):
-    row = await session.get(HeaderMenu, 1)
-    return row.json if row else []
+    row = await session.execute(select(HeaderMenu))
+    menu = row.scalars().first()
+    return menu.json if menu else []
 
 
 # ---------------------------------------------------------
@@ -36,17 +38,20 @@ async def update_menu(
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    row = await session.get(HeaderMenu, 1)
+    # ищем единственную запись
+    row = await session.execute(select(HeaderMenu))
+    menu = row.scalars().first()
 
-    if not row:
-        row = HeaderMenu(id=1, json=payload.data)
-        session.add(row)
+    if not menu:
+        # создаём новую с UUID
+        menu = HeaderMenu(json=payload.data)
+        session.add(menu)
     else:
-        row.json = payload.data
+        menu.json = payload.data
 
     await session.commit()
 
     redis = get_redis()
     await redis.delete("header-menu")
 
-    return row.json
+    return menu.json

@@ -1,3 +1,6 @@
+import uuid
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -8,11 +11,13 @@ from typing import Optional
 from ..db.session import get_session
 from ..deps.require_user import require_editor
 from ..models.models import Contact
+
 router = APIRouter(prefix="/contacts", tags=["Contacts"])
+
 
 class ContactBase(BaseModel):
     type: str
-    label: Optional[str] = None      # translation key
+    label: Optional[str] = None  # translation key
     value: str
     order: int = 0
     isVisible: bool = True
@@ -42,21 +47,23 @@ async def list_contacts(
     rows = await session.execute(query)
     return rows.scalars().all()
 
+
 @router.post("")
 async def create_contact(
         payload: ContactCreate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    contact = Contact(**payload.dict())
+    contact = Contact(id=uuid.uuid4(), **payload.dict())
     session.add(contact)
     await session.commit()
     await session.refresh(contact)
     return contact
 
+
 @router.patch("/{id}")
 async def update_contact(
-        id: int,
+        id: UUID,
         payload: ContactUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -72,9 +79,10 @@ async def update_contact(
     await session.refresh(contact)
     return contact
 
+
 @router.delete("/{id}")
 async def delete_contact(
-        id: int,
+        id: UUID,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):

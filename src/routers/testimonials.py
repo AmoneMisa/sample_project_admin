@@ -71,7 +71,7 @@ class TestimonialUpdate(BaseModel):
 
 @router.patch("/{id}")
 async def update_testimonial(
-        id: int,
+        id: str,   # UUID
         payload: TestimonialUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("reviews", "update")),
@@ -96,7 +96,7 @@ async def update_testimonial(
 # -----------------------------
 @router.delete("/{id}")
 async def delete_testimonial(
-        id: int,
+        id: str,   # UUID
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("reviews", "delete")),
 ):
@@ -117,7 +117,7 @@ async def delete_testimonial(
 #  Массовая смена порядка
 # -----------------------------
 class OrderItem(BaseModel):
-    id: int
+    id: str   # UUID
     order: int
 
 

@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -73,7 +72,7 @@ class OfferCardUpdate(BaseModel):
 
 @router.patch("/{id}")
 async def update_offer_card(
-        id: int,
+        id: str,   # UUID
         payload: OfferCardUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -99,7 +98,7 @@ async def update_offer_card(
 # ---------------------------------------------------------
 @router.delete("/{id}")
 async def delete_offer_card(
-        id: int,
+        id: str,   # UUID
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):

@@ -14,7 +14,7 @@ from typing import Optional, List
 
 
 class FooterItemBase(BaseModel):
-    type: str  # link, contact, logo, social, text
+    type: str
     labelKey: Optional[str] = None
     href: Optional[str] = None
     image: Optional[str] = None
@@ -40,7 +40,7 @@ class FooterItemUpdate(BaseModel):
 
 
 class FooterBlockBase(BaseModel):
-    type: str  # menu, newsletter, logos, contacts, footerInfo
+    type: str
     titleKey: Optional[str] = None
     descriptionKey: Optional[str] = None
     allowedDomains: Optional[List[str]] = None
@@ -60,6 +60,9 @@ class FooterBlockUpdate(BaseModel):
     isVisible: Optional[bool] = None
 
 
+# -----------------------------
+# LIST BLOCKS
+# -----------------------------
 @router.get("")
 async def list_footer(
         all: bool = False,
@@ -71,10 +74,12 @@ async def list_footer(
         query = query.where(FooterBlock.isVisible == True)
 
     rows = await session.execute(query)
-    blocks = rows.scalars().all()
-    return blocks
+    return rows.scalars().all()
 
 
+# -----------------------------
+# CREATE BLOCK
+# -----------------------------
 @router.post("")
 async def create_footer_block(
         payload: FooterBlockCreate,
@@ -92,9 +97,12 @@ async def create_footer_block(
     return block
 
 
+# -----------------------------
+# UPDATE BLOCK
+# -----------------------------
 @router.patch("/{id}")
 async def update_footer_block(
-        id: int,
+        id: str,   # UUID
         payload: FooterBlockUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -103,11 +111,10 @@ async def update_footer_block(
     if not block:
         raise HTTPException(404, "Footer block not found")
 
-    # Применяем изменения
     for k, v in payload.dict(exclude_unset=True).items():
         setattr(block, k, v)
 
-    # Логика "только один видимый блок"
+    # Only one visible block of certain types
     if payload.isVisible is True:
         if block.type in ("contacts", "logos", "newsletter"):
             await session.execute(
@@ -125,9 +132,12 @@ async def update_footer_block(
     return block
 
 
+# -----------------------------
+# DELETE BLOCK
+# -----------------------------
 @router.delete("/{id}")
 async def delete_footer_block(
-        id: int,
+        id: str,   # UUID
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
@@ -144,9 +154,12 @@ async def delete_footer_block(
     return {"status": "deleted"}
 
 
+# -----------------------------
+# CREATE ITEM
+# -----------------------------
 @router.post("/{blockId}/items")
 async def create_footer_item(
-        blockId: int,
+        blockId: str,   # UUID
         payload: FooterItemCreate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -166,9 +179,12 @@ async def create_footer_item(
     return item
 
 
+# -----------------------------
+# UPDATE ITEM
+# -----------------------------
 @router.patch("/items/{id}")
 async def update_footer_item(
-        id: int,
+        id: str,   # UUID
         payload: FooterItemUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -189,9 +205,12 @@ async def update_footer_item(
     return item
 
 
+# -----------------------------
+# DELETE ITEM
+# -----------------------------
 @router.delete("/items/{id}")
 async def delete_footer_item(
-        id: int,
+        id: str,   # UUID
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
@@ -208,9 +227,17 @@ async def delete_footer_item(
     return {"status": "deleted"}
 
 
+# -----------------------------
+# LIST ITEMS
+# -----------------------------
 @router.get("/{blockId}/items")
-async def list_footer_items(blockId: int, session: AsyncSession = Depends(get_session)):
+async def list_footer_items(
+        blockId: str,
+        session: AsyncSession = Depends(get_session)
+):
     rows = await session.execute(
-        select(FooterItem).where(FooterItem.blockId == blockId).order_by(FooterItem.order.asc())
+        select(FooterItem)
+        .where(FooterItem.blockId == blockId)
+        .order_by(FooterItem.order.asc())
     )
     return rows.scalars().all()

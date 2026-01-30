@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import (
     Column, Integer, String, Enum, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON
 )
@@ -110,7 +112,7 @@ class TranslationVersion(Base):
 class Block(Base):
     __tablename__ = "Block"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     slug = Column(String(255), unique=True, nullable=False)
     order = Column(Integer, nullable=False)
@@ -123,8 +125,7 @@ class Block(Base):
 # -------------------------
 class ChangeHistory(Base):
     __tablename__ = "ChangeHistory"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     userId = Column(Integer, nullable=True)
     payload = Column(JSON, nullable=False)
     createdAt = Column(DateTime, default=datetime.utcnow)
@@ -135,8 +136,7 @@ class ChangeHistory(Base):
 # -------------------------
 class Testimonial(Base):
     __tablename__ = "Testimonial"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     role = Column(String(255), nullable=False)
     quote = Column(String(2000), nullable=False)
@@ -152,8 +152,7 @@ class Testimonial(Base):
 # -------------------------
 class PriceCard(Base):
     __tablename__ = "PriceCard"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     title = Column(String(255), nullable=False)
     subtitle = Column(String(255), nullable=True)
     price = Column(String(255), nullable=False)
@@ -167,8 +166,7 @@ class PriceCard(Base):
 # -------------------------
 class HeaderMenu(Base):
     __tablename__ = "HeaderMenu"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     json = Column(JSON, nullable=False)
     updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -179,11 +177,11 @@ class HeaderMenu(Base):
 class FooterMenuGroup(Base):
     __tablename__ = "FooterMenuGroup"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     titleKey = Column(String(255), nullable=False)
     order = Column(Integer, nullable=False)
 
-    items = relationship("FooterMenuItem", back_populates="group")
+    items = relationship("FooterMenuItem", back_populates="group", cascade="all, delete")
 
 
 # -------------------------
@@ -192,8 +190,9 @@ class FooterMenuGroup(Base):
 class FooterMenuItem(Base):
     __tablename__ = "FooterMenuItem"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    groupId = Column(Integer, ForeignKey("FooterMenuGroup.id"), nullable=False)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    groupId = Column(String, ForeignKey("FooterMenuGroup.id"), nullable=False)
+
     labelKey = Column(String(255), nullable=False)
     href = Column(String(500), nullable=False)
     order = Column(Integer, nullable=False)
@@ -208,7 +207,7 @@ class FooterMenuItem(Base):
 class Contact(Base):
     __tablename__ = "Contact"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     type = Column(String(50), nullable=False)
     label = Column(String(255), nullable=True)
     value = Column(String(500), nullable=False)
@@ -221,8 +220,7 @@ class Contact(Base):
 # -------------------------
 class OfferCard(Base):
     __tablename__ = "OfferCards"
-
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     key = Column(String(255), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
     description = Column(String(255), nullable=False)
@@ -240,17 +238,14 @@ class OfferCard(Base):
 class FooterBlock(Base):
     __tablename__ = "FooterBlock"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    type = Column(String(50), nullable=False)  # menu, newsletter, logos, contacts, footerInfo
-    titleKey = Column(String(255), nullable=True)  # translation key (для menu)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    type = Column(String(50), nullable=False)
+    titleKey = Column(String(255), nullable=True)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
-    # newsletter config
-    allowedDomains = Column(JSON, nullable=True)  # ["gmail.com", "yahoo.com"]
-
-    # logos config
-    descriptionKey = Column(String(255), nullable=True)  # translation key
+    allowedDomains = Column(JSON, nullable=True)
+    descriptionKey = Column(String(255), nullable=True)
 
     items = relationship("FooterItem", back_populates="block", cascade="all, delete")
 
@@ -258,20 +253,15 @@ class FooterBlock(Base):
 class FooterItem(Base):
     __tablename__ = "FooterItem"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    blockId = Column(Integer, ForeignKey("FooterBlock.id"), nullable=False)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    blockId = Column(String, ForeignKey("FooterBlock.id"), nullable=False)
 
     type = Column(String(50), nullable=False)
-    # link → labelKey + href
-    # contact → labelKey (email/phone/address)
-    # logo → image + labelKey
-    # social → href + icon
-
-    labelKey = Column(String(255), nullable=True)  # translation key
+    labelKey = Column(String(255), nullable=True)
     href = Column(String(500), nullable=True)
-    image = Column(String(500), nullable=True)  # URL загруженного файла
-    value = Column(String(500), nullable=True)  # email/phone/address (если нужно хранить raw)
-    icon = Column(String(100), nullable=True)  # соцсети (i-lucide-twitter)
+    image = Column(String(500), nullable=True)
+    value = Column(String(500), nullable=True)
+    icon = Column(String(100), nullable=True)
 
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
@@ -281,10 +271,9 @@ class FooterItem(Base):
 
 class FeatureCard(Base):
     __tablename__ = "FeatureCard"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    image = Column(String(500), nullable=True)  # путь к изображению
-    titleKey = Column(String(255), nullable=False)  # переводимый ключ
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    image = Column(String(500), nullable=True)
+    titleKey = Column(String(255), nullable=False)
     descriptionKey = Column(String(255), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)

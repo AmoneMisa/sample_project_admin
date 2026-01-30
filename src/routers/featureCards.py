@@ -61,7 +61,7 @@ async def create_feature_card(
 
 @router.patch("/{id}")
 async def update_feature_card(
-        id: int,
+        id: str,
         payload: FeatureCardUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -80,7 +80,7 @@ async def update_feature_card(
 
 @router.delete("/{id}")
 async def delete_feature_card(
-        id: int,
+        id: str,   # <── UUID приходит как строка
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
