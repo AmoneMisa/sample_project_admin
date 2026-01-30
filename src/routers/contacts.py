@@ -1,12 +1,10 @@
 import uuid
-from uuid import UUID
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-
 from pydantic import BaseModel
-from typing import Optional
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import require_editor
@@ -54,7 +52,7 @@ async def create_contact(
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    contact = Contact(id=uuid.uuid4(), **payload.dict())
+    contact = Contact(id=str(uuid.uuid4()), **payload.dict())
     session.add(contact)
     await session.commit()
     await session.refresh(contact)
@@ -63,7 +61,7 @@ async def create_contact(
 
 @router.patch("/{id}")
 async def update_contact(
-        id: UUID,
+        id: str,
         payload: ContactUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
@@ -82,7 +80,7 @@ async def update_contact(
 
 @router.delete("/{id}")
 async def delete_contact(
-        id: UUID,
+        id: str,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
