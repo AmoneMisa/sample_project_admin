@@ -228,46 +228,60 @@ class CreateTranslationPayload(BaseModel):
 
 @router.post("")
 async def create_translation(
-        payload: CreateTranslationPayload,
+        payload: list[CreateTranslationPayload],
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("translations", "create")),
 ):
-    key_row = await session.scalar(
-        select(TranslationKey).where(TranslationKey.key == payload.key)
-    )
-    if not key_row:
-        key_row = TranslationKey(key=payload.key)
-        session.add(key_row)
-        await session.flush()
-
     languages = {
         lang.code: lang
         for lang in (await session.execute(select(Language))).scalars().all()
     }
 
-    for lang_code, lang in languages.items():
-        existing_value = await session.scalar(
-            select(TranslationValue).where(
-                TranslationValue.translationKeyId == key_row.id,
-                TranslationValue.languageId == lang.id
-            )
-        )
-        if not existing_value:
-            session.add(
-                TranslationValue(
-                    translationKeyId=key_row.id,
-                    languageId=lang.id,
-                    value=payload.values.get(lang_code, "")
+    existing_keys = {
+        k.key: k
+        for k in (await session.execute(select(TranslationKey))).scalars().all()
+    }
+
+    updated_langs = set()
+
+    for item in payload:
+        key_row = existing_keys.get(item.key)
+        if not key_row:
+            key_row = TranslationKey(key=item.key)
+            session.add(key_row)
+            await session.flush()
+            existing_keys[item.key] = key_row
+
+        for lang_code, lang in languages.items():
+            value = item.values.get(lang_code, "")
+
+            existing_value = await session.scalar(
+                select(TranslationValue).where(
+                    TranslationValue.translationKeyId == key_row.id,
+                    TranslationValue.languageId == lang.id
                 )
             )
+
+            if existing_value:
+                existing_value.value = value
+            else:
+                session.add(
+                    TranslationValue(
+                        translationKeyId=key_row.id,
+                        languageId=lang.id,
+                        value=value
+                    )
+                )
+
+            updated_langs.add(lang_code)
 
     await session.commit()
 
     redis = get_redis()
-    for lang_code in payload.values.keys():
-        await redis.delete(f"translations:{lang_code}")
+    for lang in updated_langs:
+        await redis.delete(f"translations:{lang}")
 
-    return {"status": "created", "key": payload.key}
+    return {"status": "created", "count": len(payload)}
 
 
 # ---------------------------------------------------------
