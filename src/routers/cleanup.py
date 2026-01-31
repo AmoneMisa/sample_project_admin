@@ -20,6 +20,9 @@ def is_broken_key(key: str, mode: str | None):
     if key == "{}":
         return True
 
+    if mode is None:
+        return False
+
     if mode == "headerMenu":
         return not re.match(rf"^headerMenu\.{UUID_RE}\.", key)
 
@@ -30,6 +33,7 @@ def is_broken_key(key: str, mode: str | None):
         return not re.match(rf"^featureCard\.{UUID_RE}\.", key)
 
     return False
+
 
 
 @router.post("")
