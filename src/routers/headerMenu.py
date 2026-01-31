@@ -44,11 +44,10 @@ async def update_menu(
     menu = row.scalars().first()
 
     if not menu:
-        menu = HeaderMenu(json=payload.data)
+        menu = HeaderMenu(json=payload.data or [])
         session.add(menu)
     else:
-        # только замена списка
-        menu.json = payload.data
+        menu.json = payload.data or []
 
     await session.commit()
 
