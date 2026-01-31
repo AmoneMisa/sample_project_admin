@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     MARIADB_USER: str
     MARIADB_PASSWORD: str
     MARIADB_DATABASE: str
+    REDIS_HOST: str
 
     @property
     def database_url(self): return (
