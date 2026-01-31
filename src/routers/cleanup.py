@@ -1,99 +1,64 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import text
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy import select, delete
 from ..db.session import get_session
+from ..models.models import TranslationKey, TranslationValue
 from ..deps.require_user import require_editor
+import re
 
 router = APIRouter(prefix="/cleanup", tags=["Maintenance"])
+
+UUID_RE = r"[0-9a-fA-F-]{36}"
+
+def is_broken_key(key: str, mode: str | None):
+    if not key or key.strip() == "":
+        return True
+
+    if "undefined" in key:
+        return True
+
+    if key == "{}":
+        return True
+
+    if mode == "headerMenu":
+        return not re.match(rf"^headerMenu\.{UUID_RE}\.", key)
+
+    if mode == "contacts":
+        return not re.match(rf"^contacts\.{UUID_RE}\.", key)
+
+    if mode == "featureCard":
+        return not re.match(rf"^featureCard\.{UUID_RE}\.", key)
+
+    return False
 
 
 @router.post("")
 async def cleanup_translations(
-        translations: bool = False,
+        translations: int = 1,
         mode: str | None = None,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    """
-    Чистит битые ключи переводов.
-    Значения могут быть пустыми — это нормально.
-    """
+    result = await session.execute(select(TranslationKey))
+    keys = result.scalars().all()
 
-    if not translations:
-        raise HTTPException(400, "Use /cleanup?translations=1")
+    broken_ids = [k.id for k in keys if is_broken_key(k.key, mode)]
 
-    # Базовые условия (всегда чистим)
-    base_conditions = """
-        `key` = '' 
-        OR `key` IS NULL
-        OR `key` LIKE '%undefined%'
-        OR (value LIKE '%{%' AND value NOT LIKE '%}%')
-        OR (value LIKE '%}%' AND value NOT LIKE '%{%')
-        OR value = '{}'
-    """
-
-    extra_condition = ""
-
-    # mode=headerMenu → проверяем UUID в headerMenu.<uuid>.*
-    if mode == "headerMenu":
-        extra_condition = """
-            OR (
-                `key` LIKE 'headerMenu.%'
-                AND `key` NOT REGEXP '^headerMenu\\.[0-9a-fA-F-]{36}\\.'
-            )
-        """
-
-    # mode=contacts → проверяем UUID в contacts.<type>.<uuid>.label
-    if mode == "contacts":
-        extra_condition = """
-            OR (
-                `key` LIKE 'contacts.%'
-                AND `key` NOT REGEXP '^contacts\\.[^.]+\\.[0-9a-fA-F-]{36}\\.label$'
-            )
-        """
-
-    # mode=featureCard → проверяем UUID в featureCard.<uuid>.title/description
-    if mode == "featureCard":
-        extra_condition = """
-            OR (
-                `key` LIKE 'featureCard.%'
-                AND `key` NOT REGEXP '^featureCard\\.[0-9a-fA-F-]{36}\\.(title|description)$'
-            )
-        """
-
-    # Финальный SQL
-    query = f"""
-        SELECT id, `key`, value
-        FROM translations
-        WHERE {base_conditions}
-        {extra_condition}
-    """
-
-    result = await session.execute(text(query))
-    rows = result.fetchall()
-
-    if not rows:
-        return {"removed": 0, "message": "Нет битых ключей"}
-
-    ids = [r.id for r in rows]
-
-    # Удаляем найденные строки
-    delete_query = f"""
-        DELETE FROM translations
-        WHERE id IN ({','.join([':id'+str(i) for i in range(len(ids))])})
-    """
+    if not broken_ids:
+        return {"removed": 0}
 
     await session.execute(
-        text(delete_query),
-        {f"id{i}": ids[i] for i in range(len(ids))}
+        delete(TranslationValue).where(
+            TranslationValue.translationKeyId.in_(broken_ids)
+        )
+    )
+
+    await session.execute(
+        delete(TranslationKey).where(
+            TranslationKey.id.in_(broken_ids)
+        )
     )
 
     await session.commit()
 
-    return {
-        "removed": len(ids),
-        "ids": ids,
-        "mode": mode,
-        "message": "Некорректные ключи удалены"
-    }
+    return {"removed": len(broken_ids)}
