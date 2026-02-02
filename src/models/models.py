@@ -7,6 +7,8 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..db.base import Base
 
+UUID = String(36)
+
 
 # -------------------------
 # User
@@ -40,7 +42,7 @@ class User(Base):
 # Language
 # -------------------------
 class Language(Base):
-    __tablename__ = "Language"
+    __tablename__ = "language"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(50), unique=True, nullable=False)
@@ -57,7 +59,7 @@ class Language(Base):
 # TranslationKey
 # -------------------------
 class TranslationKey(Base):
-    __tablename__ = "TranslationKey"
+    __tablename__ = "translationkey"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String(255), unique=True, nullable=False)
@@ -73,11 +75,11 @@ class TranslationKey(Base):
 # TranslationValue
 # -------------------------
 class TranslationValue(Base):
-    __tablename__ = "TranslationValue"
+    __tablename__ = "translationvalue"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    languageId = Column(Integer, ForeignKey("Language.id"), nullable=False)
-    translationKeyId = Column(Integer, ForeignKey("TranslationKey.id"), nullable=False)
+    languageId = Column(Integer, ForeignKey("language.id"), nullable=False)
+    translationKeyId = Column(Integer, ForeignKey("translationkey.id"), nullable=False)
     value = Column(JSON, nullable=False)
 
     language = relationship("Language", back_populates="values")
@@ -92,11 +94,11 @@ class TranslationValue(Base):
 # TranslationVersion
 # -------------------------
 class TranslationVersion(Base):
-    __tablename__ = "TranslationVersion"
+    __tablename__ = "translationversion"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    translationKeyId = Column(Integer, ForeignKey("TranslationKey.id"), nullable=False)
-    languageId = Column(Integer, ForeignKey("Language.id"), nullable=False)
+    translationKeyId = Column(Integer, ForeignKey("translationkey.id"), nullable=False)
+    languageId = Column(Integer, ForeignKey("language.id"), nullable=False)
     value = Column(String(5000), nullable=False)
     createdAt = Column(DateTime, default=datetime.utcnow)
     createdById = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -110,9 +112,9 @@ class TranslationVersion(Base):
 # Block
 # -------------------------
 class Block(Base):
-    __tablename__ = "Block"
+    __tablename__ = "block"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     slug = Column(String(255), unique=True, nullable=False)
     order = Column(Integer, nullable=False)
@@ -124,8 +126,9 @@ class Block(Base):
 # ChangeHistory
 # -------------------------
 class ChangeHistory(Base):
-    __tablename__ = "ChangeHistory"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    __tablename__ = "changehistory"
+
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     userId = Column(Integer, nullable=True)
     payload = Column(JSON, nullable=False)
     createdAt = Column(DateTime, default=datetime.utcnow)
@@ -135,8 +138,9 @@ class ChangeHistory(Base):
 # Testimonial
 # -------------------------
 class Testimonial(Base):
-    __tablename__ = "Testimonial"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    __tablename__ = "testimonial"
+
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     role = Column(String(255), nullable=False)
     quote = Column(String(2000), nullable=False)
@@ -151,8 +155,9 @@ class Testimonial(Base):
 # PriceCard
 # -------------------------
 class PriceCard(Base):
-    __tablename__ = "PriceCard"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    __tablename__ = "pricecard"
+
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     title = Column(String(255), nullable=False)
     subtitle = Column(String(255), nullable=True)
     price = Column(String(255), nullable=False)
@@ -165,8 +170,9 @@ class PriceCard(Base):
 # HeaderMenu
 # -------------------------
 class HeaderMenu(Base):
-    __tablename__ = "HeaderMenu"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    __tablename__ = "headermenu"
+
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     json = Column(JSON, nullable=False)
     updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -175,9 +181,9 @@ class HeaderMenu(Base):
 # FooterMenuGroup
 # -------------------------
 class FooterMenuGroup(Base):
-    __tablename__ = "FooterMenuGroup"
+    __tablename__ = "footermenugroup"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     titleKey = Column(String(255), nullable=False)
     order = Column(Integer, nullable=False)
 
@@ -188,10 +194,10 @@ class FooterMenuGroup(Base):
 # FooterMenuItem
 # -------------------------
 class FooterMenuItem(Base):
-    __tablename__ = "FooterMenuItem"
+    __tablename__ = "footermenuitem"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    groupId = Column(String, ForeignKey("FooterMenuGroup.id"), nullable=False)
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
+    groupId = Column(UUID, ForeignKey("footermenugroup.id"), nullable=False)
 
     labelKey = Column(String(255), nullable=False)
     href = Column(String(500), nullable=False)
@@ -205,11 +211,12 @@ class FooterMenuItem(Base):
 # Contact
 # -------------------------
 class Contact(Base):
-    __tablename__ = "Contact"
+    __tablename__ = "contact"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     type = Column(String(50), nullable=False)
-    label = Column(String(255), nullable=True)
+    labelKey = Column(String(255), nullable=True)
+    socialType = Column(String(50), nullable=True)
     value = Column(String(500), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
@@ -219,14 +226,19 @@ class Contact(Base):
 # Offer Card
 # -------------------------
 class OfferCard(Base):
-    __tablename__ = "OfferCards"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    __tablename__ = "offercards"
+
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
+
     key = Column(String(255), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
     description = Column(String(255), nullable=False)
+
     monthly = Column(String(255), nullable=False)
     yearly = Column(String(255), nullable=False)
+
     features = Column(String(500), nullable=False)
+
     highlight = Column(Boolean, default=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
@@ -236,11 +248,13 @@ class OfferCard(Base):
 # Footer Block
 # -------------------------
 class FooterBlock(Base):
-    __tablename__ = "FooterBlock"
+    __tablename__ = "footerblock"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
+
     type = Column(String(50), nullable=False)
     titleKey = Column(String(255), nullable=True)
+
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
@@ -251,12 +265,13 @@ class FooterBlock(Base):
 
 
 class FooterItem(Base):
-    __tablename__ = "FooterItem"
+    __tablename__ = "footeritem"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    blockId = Column(String, ForeignKey("FooterBlock.id"), nullable=False)
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
+    blockId = Column(UUID, ForeignKey("footerblock.id"), nullable=False)
 
     type = Column(String(50), nullable=False)
+
     labelKey = Column(String(255), nullable=True)
     href = Column(String(500), nullable=True)
     image = Column(String(500), nullable=True)
@@ -270,10 +285,14 @@ class FooterItem(Base):
 
 
 class FeatureCard(Base):
-    __tablename__ = "FeatureCard"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    __tablename__ = "featurecard"
+
+    id = Column(UUID, primary_key=True, default=lambda: str(uuid.uuid4()))
+
     image = Column(String(500), nullable=True)
+
     titleKey = Column(String(255), nullable=False)
     descriptionKey = Column(String(255), nullable=False)
+
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)

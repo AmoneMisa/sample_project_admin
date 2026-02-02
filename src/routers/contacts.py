@@ -15,7 +15,8 @@ router = APIRouter(prefix="/contacts", tags=["Contacts"])
 
 class ContactBase(BaseModel):
     type: str
-    label: Optional[str] = None  # translation key
+    labelKey: Optional[str] = None
+    socialType: Optional[str] = None
     value: str
     order: int = 0
     isVisible: bool = True
@@ -27,7 +28,8 @@ class ContactCreate(ContactBase):
 
 class ContactUpdate(BaseModel):
     type: Optional[str] = None
-    label: Optional[str] = None
+    labelKey: Optional[str] = None
+    socialType: Optional[str] = None
     value: Optional[str] = None
     order: Optional[int] = None
     isVisible: Optional[bool] = None
@@ -47,12 +49,12 @@ async def list_contacts(
 
 
 @router.post("")
-async def create_contact(
-        payload: ContactCreate,
-        session: AsyncSession = Depends(get_session),
-        user=Depends(require_editor),
-):
-    contact = Contact(id=str(uuid.uuid4()), **payload.dict())
+async def create_contact(payload: ContactCreate, session: AsyncSession = Depends(get_session),
+                         user=Depends(require_editor)):
+    data = payload.dict(exclude_unset=True)
+    if not data.get("labelKey") and data.get("label"):
+        data["labelKey"] = data["label"]
+    contact = Contact(id=str(uuid.uuid4()), **data)
     session.add(contact)
     await session.commit()
     await session.refresh(contact)
@@ -71,6 +73,9 @@ async def update_contact(
         raise HTTPException(404, "Contact not found")
 
     for k, v in payload.dict(exclude_unset=True).items():
+        if k == "label" and (payload.labelKey is None):
+            setattr(contact, "labelKey", v)
+            continue
         setattr(contact, k, v)
 
     await session.commit()
