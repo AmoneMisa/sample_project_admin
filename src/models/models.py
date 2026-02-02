@@ -205,7 +205,7 @@ class FooterMenuItem(Base):
 # Contact
 # -------------------------
 class Contact(Base):
-    __tablename__ = "contact"
+    __tablename__ = "Contact"
 
     id = Column(VARCHAR(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     type = Column(String(50), nullable=False)
