@@ -36,7 +36,7 @@ class OfferCardCreate(BaseModel):
     features: str
     highlight: bool = False
     order: int = 0
-    visible: bool = True
+    isVisible: bool = True
 
 
 @router.post("")
@@ -67,7 +67,7 @@ class OfferCardUpdate(BaseModel):
     features: str | None = None
     highlight: bool | None = None
     order: int | None = None
-    visible: bool | None = None
+    isVisible: bool | None = None
 
 
 @router.patch("/{id}")
