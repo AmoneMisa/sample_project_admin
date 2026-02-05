@@ -30,7 +30,6 @@ def api_error(code: str, message: str, status: int = 400, field: str | None = No
 # ---------------------------------------------------------
 class FeatureItem(BaseModel):
     id: str = Field(..., min_length=36, max_length=36)
-    labelKey: str = Field(..., min_length=1)
     order: int = Field(ge=0)
     isVisible: bool = True
 
