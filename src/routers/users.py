@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,19 +16,29 @@ SOFT_DELETE_PERIOD_DAYS = 180
 
 
 # ---------------------------------------------------------
+# Unified API error helper
+# ---------------------------------------------------------
+def api_error(code: str, message: str, status: int = 400, field: Optional[str] = None):
+    detail = {"code": code, "message": message}
+    if field:
+        detail["field"] = field
+    raise HTTPException(status_code=status, detail=detail)
+
+
+# ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
 async def get_user_or_404(db: AsyncSession, user_id: int) -> User:
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(404, "Пользователь не найден")
+        api_error("USER_NOT_FOUND", "Пользователь не найден", status=404)
     return user
 
 
 def ensure_not_admin(user: User):
     if user.role == "admin":
-        raise HTTPException(400, "Нельзя менять данные администратора")
+        api_error("FORBIDDEN", "Нельзя менять данные администратора", status=400)
 
 
 # ---------------------------------------------------------
@@ -35,9 +46,9 @@ def ensure_not_admin(user: User):
 # ---------------------------------------------------------
 @router.get("")
 async def list_users(
-        role: str | None = None,
-        email: str | None = None,
-        deleted: bool | None = None,
+        role: Optional[str] = None,
+        email: Optional[str] = None,
+        deleted: Optional[bool] = None,
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
@@ -65,14 +76,15 @@ async def get_user_by_id(
         db: AsyncSession = Depends(get_session),
         admin: User = Depends(require_admin),
 ):
-    return await get_user_or_404(db, user_id)
+    user = await get_user_or_404(db, user_id)
+    return user
 
 
 # ---------------------------------------------------------
 # POST /users/{id}/role — смена роли
 # ---------------------------------------------------------
 class ChangeRoleRequest(BaseModel):
-    role: str  # "observer" или "moderator"
+    role: str = Field(..., min_length=1)
 
 
 @router.post("/{user_id}/role")
@@ -83,7 +95,7 @@ async def change_role(
         admin: User = Depends(require_admin),
 ):
     if data.role not in ("observer", "moderator"):
-        raise HTTPException(400, "Недопустимая роль")
+        api_error("INVALID_ROLE", "Недопустимая роль", field="role", status=422)
 
     user = await get_user_or_404(db, user_id)
     ensure_not_admin(user)
@@ -92,7 +104,7 @@ async def change_role(
     await db.commit()
     await db.refresh(user)
 
-    return {"id": user.id, "role": user.role}
+    return {"status": "updated", "id": user.id, "role": user.role}
 
 
 # ---------------------------------------------------------
@@ -129,7 +141,7 @@ async def restore_user(
         return {"status": "not_deleted"}
 
     if user.deleted_at and datetime.utcnow() - user.deleted_at > timedelta(days=SOFT_DELETE_PERIOD_DAYS):
-        raise HTTPException(410, "Профиль окончательно удалён")
+        api_error("GONE", "Профиль окончательно удалён", status=410)
 
     user.deleted = False
     user.deleted_at = None
@@ -160,4 +172,4 @@ async def update_permissions(
     await db.commit()
     await db.refresh(user)
 
-    return {"id": user.id, "permissions": user.permissions}
+    return {"status": "updated", "id": user.id, "permissions": user.permissions}

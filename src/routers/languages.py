@@ -1,41 +1,64 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+
 from ..db.session import get_session
 from ..deps.require_user import require_admin, require_editor
 from ..models.models import Language
 
+
 router = APIRouter(prefix="/languages", tags=["Languages"])
 
 
-# -----------------------------
-#  Получить все языки
-# -----------------------------
+# ---------------------------------------------------------
+# Unified API error helper
+# ---------------------------------------------------------
+def api_error(code: str, message: str, status: int = 400, field: str | None = None):
+    detail = {"code": code, "message": message}
+    if field:
+        detail["field"] = field
+    raise HTTPException(status_code=status, detail=detail)
+
+
+# ---------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------
+class CreateLanguagePayload(BaseModel):
+    code: str = Field(..., min_length=2)
+    name: str = Field(..., min_length=1)
+    enabled: bool = True
+
+
+class UpdateLanguagePayload(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    enabled: Optional[bool] = None
+
+
+# ---------------------------------------------------------
+# GET /languages
+# ---------------------------------------------------------
 @router.get("")
-async def get_languages(
-        session: AsyncSession = Depends(get_session),
-):
+async def get_languages(session: AsyncSession = Depends(get_session)):
     result = await session.scalars(select(Language))
     return result.all()
 
 
-# -----------------------------
-#  Получить включённые языки (ПУБЛИЧНО)
-# -----------------------------
+# ---------------------------------------------------------
+# GET /languages/enabled
+# ---------------------------------------------------------
 @router.get("/enabled")
-async def get_enabled_languages(
-        session: AsyncSession = Depends(get_session),
-):
+async def get_enabled_languages(session: AsyncSession = Depends(get_session)):
     result = await session.scalars(
         select(Language).where(Language.isEnabled.is_(True))
     )
     return result.all()
 
 
-# -----------------------------
-#  Инициализация языков (ТОЛЬКО АДМИН)
-# -----------------------------
+# ---------------------------------------------------------
+# GET /languages/init  (admin only)
+# ---------------------------------------------------------
 @router.get("/init")
 async def init_languages(
         session: AsyncSession = Depends(get_session),
@@ -65,50 +88,65 @@ async def init_languages(
             created.append(lang["code"])
 
     await session.commit()
-    return {"created": created}
+    return {"status": "initialized", "created": created}
 
 
-# -----------------------------
-#  Обновить язык (ADMIN или MODERATOR)
-# -----------------------------
+# ---------------------------------------------------------
+# PATCH /languages/{code}
+# ---------------------------------------------------------
 @router.patch("/{code}")
 async def update_language(
         code: str,
-        payload: dict,
+        payload: UpdateLanguagePayload,
         session: AsyncSession = Depends(get_session),
-        user=Depends(require_editor),  # разрешаем admin и moderator
+        user=Depends(require_editor),  # admin + moderator
 ):
     lang = await session.scalar(select(Language).where(Language.code == code))
     if not lang:
-        raise HTTPException(status_code=404, detail="Language not found")
+        api_error("LANGUAGE_NOT_FOUND", "Язык не найден", status=404)
 
-    if "enabled" in payload:
-        lang.isEnabled = bool(payload["enabled"])
+    if payload.name is not None and payload.name.strip() == "":
+        api_error("INVALID_NAME", "Название языка не может быть пустым", field="name", status=422)
 
-    if "name" in payload:
-        lang.name = payload["name"]
+    if payload.enabled is not None:
+        lang.isEnabled = payload.enabled
+
+    if payload.name is not None:
+        lang.name = payload.name
 
     await session.commit()
-    return lang
+    await session.refresh(lang)
+
+    return {"status": "updated", "language": lang}
 
 
-class CreateLanguagePayload(BaseModel):
-    code: str
-    name: str
-    enabled: bool = True
-
-
+# ---------------------------------------------------------
+# POST /languages
+# ---------------------------------------------------------
 @router.post("")
 async def create_language(
         payload: CreateLanguagePayload,
         session: AsyncSession = Depends(get_session),
         admin=Depends(require_admin),
 ):
+    if payload.code.strip() == "":
+        api_error("INVALID_CODE", "Код языка не может быть пустым", field="code", status=422)
+
+    if payload.name.strip() == "":
+        api_error("INVALID_NAME", "Название языка не может быть пустым", field="name", status=422)
+
     existing = await session.scalar(select(Language).where(Language.code == payload.code))
     if existing:
-        raise HTTPException(status_code=400, detail="Language already exists")
+        api_error("LANGUAGE_EXISTS", "Язык уже существует", field="code", status=400)
 
-    lang = Language(code=payload.code, name=payload.name, isEnabled=payload.enabled)
+    lang = Language(
+        code=payload.code,
+        name=payload.name,
+        isEnabled=payload.enabled
+    )
+
     session.add(lang)
     await session.commit()
-    return lang
+    await session.refresh(lang)
+
+    return {"status": "created", "language": lang}

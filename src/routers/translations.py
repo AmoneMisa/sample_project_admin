@@ -1,10 +1,10 @@
 import codecs
 import json
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Optional
 
 from fastapi import APIRouter, Query, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,27 @@ from ..utils.translation_tree import build_tree
 
 router = APIRouter(prefix="/translations", tags=["Translations"])
 
+
+# ---------------------------------------------------------
+# Unified API error helper
+# ---------------------------------------------------------
+def api_error(code: str, message: str, status: int = 400, field: str | None = None):
+    detail = {"code": code, "message": message}
+    if field:
+        detail["field"] = field
+    raise HTTPException(status_code=status, detail=detail)
+
+
+def normalize_value_for_db(value: Union[str, int, float, None]) -> Union[str, int, float, None]:
+    if isinstance(value, (str, int, float)) or value is None:
+        return value
+    api_error(
+        "INVALID_VALUE_TYPE",
+        "Значение перевода должно быть строкой или числом",
+        status=422,
+    )
+
+
 # ---------------------------------------------------------
 # PUBLIC GET /translations?lang=ru
 # ---------------------------------------------------------
@@ -24,7 +45,7 @@ router = APIRouter(prefix="/translations", tags=["Translations"])
 async def get_translations(
         key: str | None = None,
         lang: str | None = None,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
 ):
     # Если указан конкретный язык → вернуть только его
     if lang:
@@ -35,21 +56,20 @@ async def get_translations(
             .where(Language.code == lang)
         )
 
-        result = {}
+        result: dict[str, Union[str, int, float, list, dict]] = {}
         for value, key_obj in values.all():
             try:
                 parsed = json.loads(value.value)
                 result[key_obj.key] = parsed
-            except:
+            except Exception:
                 result[key_obj.key] = value.value
         return result
 
     # Если язык НЕ указан → вернуть ВСЕ языки
-    # (именно это нужно твоему фронтенду)
     languages = await session.execute(select(Language))
     languages = [l[0].code for l in languages.all()]
 
-    result = {}
+    result: dict[str, dict[str, Union[str, int, float, list, dict]]] = {}
 
     for code in languages:
         values = await session.execute(
@@ -59,12 +79,12 @@ async def get_translations(
             .where(Language.code == code)
         )
 
-        lang_map = {}
+        lang_map: dict[str, Union[str, int, float, list, dict]] = {}
         for value, key_obj in values.all():
             try:
                 parsed = json.loads(value.value)
                 lang_map[key_obj.key] = parsed
-            except:
+            except Exception:
                 lang_map[key_obj.key] = value.value
 
         result[code] = lang_map
@@ -83,11 +103,9 @@ async def get_translations(
 async def get_structured_translations(
         key: str | None = None,
         lang: str | None = None,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
 ):
-    # ---------------------------------------------------------
     # 1. Если указан язык → вернуть дерево только для него
-    # ---------------------------------------------------------
     if lang:
         values = await session.execute(
             select(TranslationValue, TranslationKey)
@@ -96,28 +114,25 @@ async def get_structured_translations(
             .where(Language.code == lang)
         )
 
-        flat = {}
+        flat: dict[str, Union[str, int, float, list, dict]] = {}
         for value, key_obj in values.all():
             try:
                 flat[key_obj.key] = json.loads(value.value)
-            except:
+            except Exception:
                 flat[key_obj.key] = value.value
 
         tree = build_tree(flat)
 
-        # Если указан key → вернуть только его ветку
         if key:
             return tree.get(key, {})
 
         return tree
 
-    # ---------------------------------------------------------
     # 2. Если язык НЕ указан → вернуть дерево для всех языков
-    # ---------------------------------------------------------
     languages = await session.execute(select(Language))
     languages = [l[0].code for l in languages.all()]
 
-    result = {}
+    result: dict[str, dict] = {}
 
     for code in languages:
         values = await session.execute(
@@ -127,16 +142,15 @@ async def get_structured_translations(
             .where(Language.code == code)
         )
 
-        flat = {}
+        flat: dict[str, Union[str, int, float, list, dict]] = {}
         for value, key_obj in values.all():
             try:
                 flat[key_obj.key] = json.loads(value.value)
-            except:
+            except Exception:
                 flat[key_obj.key] = value.value
 
         tree = build_tree(flat)
 
-        # Если указан key → вернуть только его ветку
         if key:
             result[code] = tree.get(key, {})
         else:
@@ -145,9 +159,8 @@ async def get_structured_translations(
     return result
 
 
-
 # ---------------------------------------------------------
-# IMPORT (оставляем как есть)
+# IMPORT
 # ---------------------------------------------------------
 def decode_unicode(value):
     if isinstance(value, str):
@@ -173,6 +186,8 @@ async def import_translations(
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("translations", "update")),
 ):
+    updated_langs: set[str] = set()
+
     for file in files:
         content = await file.read()
         tree = json.loads(content)
@@ -186,6 +201,7 @@ async def import_translations(
 
         for key_str, value in flat.items():
             value = decode_unicode(value)
+            value = normalize_value_for_db(value)  # строка/число/None
 
             key = await session.scalar(select(TranslationKey).where(TranslationKey.key == key_str))
             if not key:
@@ -196,34 +212,37 @@ async def import_translations(
             existing_value = await session.scalar(
                 select(TranslationValue).where(
                     TranslationValue.translationKeyId == key.id,
-                    TranslationValue.languageId == lang.id
-                )
+                    TranslationValue.languageId == lang.id,
+                    )
             )
             if existing_value:
-                continue
-
-            session.add(
-                TranslationValue(
-                    translationKeyId=key.id,
-                    languageId=lang.id,
-                    value=value
+                existing_value.value = value
+            else:
+                session.add(
+                    TranslationValue(
+                        translationKeyId=key.id,
+                        languageId=lang.id,
+                        value=value,
+                    )
                 )
-            )
+
+        updated_langs.add(lang_code)
 
     await session.commit()
 
     redis = get_redis()
-    await redis.delete(f"translations:{lang_code}")
+    for lang_code in updated_langs:
+        await redis.delete(f"translations:{lang_code}")
 
-    return {"status": "imported"}
+    return {"status": "imported", "languages": list(updated_langs)}
 
 
 # ---------------------------------------------------------
 # CREATE /translations (создать новый ключ)
 # ---------------------------------------------------------
 class CreateTranslationPayload(BaseModel):
-    key: str
-    values: dict[str, Union[str, list, dict, None]] = {}
+    key: str = Field(..., min_length=1)
+    values: dict[str, Union[str, int, float, None]] = {}
 
 
 @router.post("")
@@ -237,14 +256,20 @@ async def create_translation(
         for lang in (await session.execute(select(Language))).scalars().all()
     }
 
+    if not languages:
+        api_error("NO_LANGUAGES", "В системе не настроены языки", status=400)
+
     existing_keys = {
         k.key: k
         for k in (await session.execute(select(TranslationKey))).scalars().all()
     }
 
-    updated_langs = set()
+    updated_langs: set[str] = set()
 
     for item in payload:
+        if not item.key.strip():
+            api_error("INVALID_KEY", "Ключ перевода не может быть пустым", field="key", status=422)
+
         key_row = existing_keys.get(item.key)
         if not key_row:
             key_row = TranslationKey(key=item.key)
@@ -253,13 +278,14 @@ async def create_translation(
             existing_keys[item.key] = key_row
 
         for lang_code, lang in languages.items():
-            value = item.values.get(lang_code, "")
+            raw_value = item.values.get(lang_code, "")
+            value = normalize_value_for_db(raw_value)
 
             existing_value = await session.scalar(
                 select(TranslationValue).where(
                     TranslationValue.translationKeyId == key_row.id,
-                    TranslationValue.languageId == lang.id
-                )
+                    TranslationValue.languageId == lang.id,
+                    )
             )
 
             if existing_value:
@@ -269,7 +295,7 @@ async def create_translation(
                     TranslationValue(
                         translationKeyId=key_row.id,
                         languageId=lang.id,
-                        value=value
+                        value=value,
                     )
                 )
 
@@ -288,9 +314,9 @@ async def create_translation(
 # UPDATE /translations (массовое обновление)
 # ---------------------------------------------------------
 class UpdateItem(BaseModel):
-    key: str
-    lang: str
-    value: Union[str, dict, list, None]
+    key: str = Field(..., min_length=1)
+    lang: str = Field(..., min_length=1)
+    value: Union[str, int, float, None]
 
 
 class UpdatePayload(BaseModel):
@@ -318,12 +344,15 @@ async def update_translations(
         for v in (await session.execute(select(TranslationValue))).scalars().all()
     }
 
-    updated_langs = set()
+    updated_langs: set[str] = set()
 
     for item in payload.items:
         lang = languages.get(item.lang)
         if not lang:
-            raise HTTPException(404, f"Language '{item.lang}' not found")
+            api_error("LANGUAGE_NOT_FOUND", f"Язык '{item.lang}' не найден", field="lang", status=404)
+
+        if not item.key.strip():
+            api_error("INVALID_KEY", "Ключ перевода не может быть пустым", field="key", status=422)
 
         key_row = existing_keys.get(item.key)
         if not key_row:
@@ -332,14 +361,10 @@ async def update_translations(
             await session.flush()
             existing_keys[item.key] = key_row
 
+        value_to_save = normalize_value_for_db(item.value)
+
         value_key = (key_row.id, lang.id)
         value_row = existing_values.get(value_key)
-
-        value_to_save = (
-            json.dumps(item.value, ensure_ascii=False)
-            if isinstance(item.value, (list, dict))
-            else item.value
-        )
 
         if value_row:
             value_row.value = value_to_save
@@ -347,7 +372,7 @@ async def update_translations(
             value_row = TranslationValue(
                 translationKeyId=key_row.id,
                 languageId=lang.id,
-                value=value_to_save
+                value=value_to_save,
             )
             session.add(value_row)
             existing_values[value_key] = value_row
@@ -376,6 +401,9 @@ async def delete_translations(
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("translations", "delete")),
 ):
+    if not payload.keys:
+        return {"status": "deleted", "count": 0}
+
     key_rows = (
         await session.execute(
             select(TranslationKey).where(TranslationKey.key.in_(payload.keys))
@@ -383,7 +411,7 @@ async def delete_translations(
     ).scalars().all()
 
     if not key_rows:
-        return {"status": "ok", "deleted": 0}
+        return {"status": "deleted", "count": 0}
 
     key_ids = [k.id for k in key_rows]
 

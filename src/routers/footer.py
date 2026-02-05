@@ -1,20 +1,35 @@
+import uuid
+from typing import Optional, List
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import require_editor
 from ..models.models import FooterBlock, FooterItem
 from ..utils.redis_client import get_redis
 
+
 router = APIRouter(prefix="/footer", tags=["Footer"])
 
-from pydantic import BaseModel
-from typing import Optional, List
+
+# ---------------------------------------------------------
+# Unified API error helper
+# ---------------------------------------------------------
+def api_error(code: str, message: str, status: int = 400, field: str | None = None):
+    detail = {"code": code, "message": message}
+    if field:
+        detail["field"] = field
+    raise HTTPException(status_code=status, detail=detail)
 
 
+# ---------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------
 class FooterItemBase(BaseModel):
-    type: str
+    type: str = Field(..., min_length=1)
     labelKey: Optional[str] = None
     href: Optional[str] = None
     image: Optional[str] = None
@@ -29,7 +44,7 @@ class FooterItemCreate(FooterItemBase):
 
 
 class FooterItemUpdate(BaseModel):
-    type: Optional[str] = None
+    type: Optional[str] = Field(None, min_length=1)
     labelKey: Optional[str] = None
     href: Optional[str] = None
     image: Optional[str] = None
@@ -40,7 +55,7 @@ class FooterItemUpdate(BaseModel):
 
 
 class FooterBlockBase(BaseModel):
-    type: str
+    type: str = Field(..., min_length=1)
     titleKey: Optional[str] = None
     descriptionKey: Optional[str] = None
     allowedDomains: Optional[List[str]] = None
@@ -60,9 +75,9 @@ class FooterBlockUpdate(BaseModel):
     isVisible: Optional[bool] = None
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # LIST BLOCKS
-# -----------------------------
+# ---------------------------------------------------------
 @router.get("")
 async def list_footer(
         all: bool = False,
@@ -77,16 +92,23 @@ async def list_footer(
     return rows.scalars().all()
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # CREATE BLOCK
-# -----------------------------
+# ---------------------------------------------------------
 @router.post("")
 async def create_footer_block(
         payload: FooterBlockCreate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    block = FooterBlock(**payload.dict())
+    if not payload.type.strip():
+        api_error("INVALID_TYPE", "Поле type не может быть пустым", field="type", status=422)
+
+    block = FooterBlock(
+        id=str(uuid.uuid4()),
+        **payload.dict()
+    )
+
     session.add(block)
     await session.commit()
     await session.refresh(block)
@@ -94,22 +116,28 @@ async def create_footer_block(
     redis = get_redis()
     await redis.delete("footer")
 
-    return block
+    return {"status": "created", "block": block}
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # UPDATE BLOCK
-# -----------------------------
+# ---------------------------------------------------------
 @router.patch("/{id}")
 async def update_footer_block(
-        id: str,   # UUID
+        id: str,
         payload: FooterBlockUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
     block = await session.get(FooterBlock, id)
     if not block:
-        raise HTTPException(404, "Footer block not found")
+        api_error("BLOCK_NOT_FOUND", "Footer block не найден", status=404)
+
+    if payload.titleKey is not None and payload.titleKey.strip() == "":
+        api_error("INVALID_TITLE_KEY", "titleKey не может быть пустым", field="titleKey", status=422)
+
+    if payload.descriptionKey is not None and payload.descriptionKey.strip() == "":
+        api_error("INVALID_DESCRIPTION_KEY", "descriptionKey не может быть пустым", field="descriptionKey", status=422)
 
     for k, v in payload.dict(exclude_unset=True).items():
         setattr(block, k, v)
@@ -129,21 +157,21 @@ async def update_footer_block(
     redis = get_redis()
     await redis.delete("footer")
 
-    return block
+    return {"status": "updated", "block": block}
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # DELETE BLOCK
-# -----------------------------
+# ---------------------------------------------------------
 @router.delete("/{id}")
 async def delete_footer_block(
-        id: str,   # UUID
+        id: str,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
     block = await session.get(FooterBlock, id)
     if not block:
-        raise HTTPException(404, "Footer block not found")
+        api_error("BLOCK_NOT_FOUND", "Footer block не найден", status=404)
 
     await session.delete(block)
     await session.commit()
@@ -154,21 +182,29 @@ async def delete_footer_block(
     return {"status": "deleted"}
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # CREATE ITEM
-# -----------------------------
+# ---------------------------------------------------------
 @router.post("/{blockId}/items")
 async def create_footer_item(
-        blockId: str,   # UUID
+        blockId: str,
         payload: FooterItemCreate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
     block = await session.get(FooterBlock, blockId)
     if not block:
-        raise HTTPException(404, "Footer block not found")
+        api_error("BLOCK_NOT_FOUND", "Footer block не найден", status=404)
 
-    item = FooterItem(blockId=blockId, **payload.dict())
+    if not payload.type.strip():
+        api_error("INVALID_TYPE", "Поле type не может быть пустым", field="type", status=422)
+
+    item = FooterItem(
+        id=str(uuid.uuid4()),
+        blockId=blockId,
+        **payload.dict()
+    )
+
     session.add(item)
     await session.commit()
     await session.refresh(item)
@@ -176,22 +212,25 @@ async def create_footer_item(
     redis = get_redis()
     await redis.delete("footer")
 
-    return item
+    return {"status": "created", "item": item}
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # UPDATE ITEM
-# -----------------------------
+# ---------------------------------------------------------
 @router.patch("/items/{id}")
 async def update_footer_item(
-        id: str,   # UUID
+        id: str,
         payload: FooterItemUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
     item = await session.get(FooterItem, id)
     if not item:
-        raise HTTPException(404, "Footer item not found")
+        api_error("ITEM_NOT_FOUND", "Footer item не найден", status=404)
+
+    if payload.type is not None and payload.type.strip() == "":
+        api_error("INVALID_TYPE", "Поле type не может быть пустым", field="type", status=422)
 
     for k, v in payload.dict(exclude_unset=True).items():
         setattr(item, k, v)
@@ -202,21 +241,21 @@ async def update_footer_item(
     redis = get_redis()
     await redis.delete("footer")
 
-    return item
+    return {"status": "updated", "item": item}
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # DELETE ITEM
-# -----------------------------
+# ---------------------------------------------------------
 @router.delete("/items/{id}")
 async def delete_footer_item(
-        id: str,   # UUID
+        id: str,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
     item = await session.get(FooterItem, id)
     if not item:
-        raise HTTPException(404, "Footer item not found")
+        api_error("ITEM_NOT_FOUND", "Footer item не найден", status=404)
 
     await session.delete(item)
     await session.commit()
@@ -227,9 +266,9 @@ async def delete_footer_item(
     return {"status": "deleted"}
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # LIST ITEMS
-# -----------------------------
+# ---------------------------------------------------------
 @router.get("/{blockId}/items")
 async def list_footer_items(
         blockId: str,
