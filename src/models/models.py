@@ -225,8 +225,8 @@ from sqlalchemy import Column, JSON
 class OfferCard(Base):
     __tablename__ = "OfferCards"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    name = Column(String(255))
-    description = Column(Text)
+    nameKey = Column(String(255))
+    descriptionKey = Column(Text)
     monthly = Column(Numeric(10, 2), nullable=False)
     yearly = Column(Numeric(10, 2), nullable=False)
     features = Column(JSON, default=list)
