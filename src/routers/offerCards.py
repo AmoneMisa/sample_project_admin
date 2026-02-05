@@ -12,7 +12,6 @@ from ..deps.require_user import require_editor
 from ..models.models import OfferCard
 from ..utils.redis_client import get_redis
 
-
 router = APIRouter(prefix="/offer-cards", tags=["OfferCards"])
 
 
@@ -30,7 +29,8 @@ def api_error(code: str, message: str, status: int = 400, field: str | None = No
 # Schemas
 # ---------------------------------------------------------
 class FeatureItem(BaseModel):
-    labelKey: Optional[str] = None
+    id: str = Field(..., min_length=36, max_length=36)
+    labelKey: str = Field(..., min_length=1)
     order: int = Field(ge=0)
     isVisible: bool = True
 
@@ -40,14 +40,15 @@ class OfferCardCreate(BaseModel):
     description: str = Field(..., min_length=1)
     monthly: condecimal(ge=Decimal("0.01"), decimal_places=2)
     yearly: condecimal(ge=Decimal("0.01"), decimal_places=2)
-    features: List[FeatureItem] = []
+    features: List[FeatureItem] = Field(..., min_length=1)
     highlight: bool = False
     order: int = 0
     isVisible: bool = True
 
 
 class FeatureItemUpdate(BaseModel):
-    labelKey: str = Field(..., min_length=1, max_length=255)
+    id: str = Field(..., min_length=36, max_length=36)
+    labelKey: str = Field(..., min_length=1)
     order: int = Field(ge=0)
     isVisible: bool = True
 
