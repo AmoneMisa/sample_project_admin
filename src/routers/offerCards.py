@@ -35,8 +35,8 @@ class FeatureItem(BaseModel):
 
 
 class OfferCardCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    description: str = Field(..., min_length=1)
+    nameKey: str = Field(..., min_length=1)
+    descriptionKey: str = Field(..., min_length=1)
     monthly: condecimal(ge=Decimal("0.01"), decimal_places=2)
     yearly: condecimal(ge=Decimal("0.01"), decimal_places=2)
     features: List[FeatureItem] = Field(..., min_length=1)
@@ -53,8 +53,8 @@ class FeatureItemUpdate(BaseModel):
 
 
 class OfferCardUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1)
-    description: Optional[str] = Field(None, min_length=1)
+    nameKey: Optional[str] = Field(None, min_length=1)
+    descriptionKey: Optional[str] = Field(None, min_length=1)
     monthly: Optional[condecimal(ge=Decimal("0.01"), decimal_places=2)] = None
     yearly: Optional[condecimal(ge=Decimal("0.01"), decimal_places=2)] = None
     features: Optional[List[FeatureItemUpdate]] = None
