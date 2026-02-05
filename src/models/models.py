@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import (
-    Column, Integer, String, Enum, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON, VARCHAR
+    Column, Integer, String, Enum, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON, VARCHAR, Text, Numeric
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -216,19 +216,20 @@ class Contact(Base):
     isVisible = Column(Boolean, default=True)
 
 
-
 # -------------------------
 # Offer Card
 # -------------------------
+from sqlalchemy import Column, JSON
+
+
 class OfferCard(Base):
     __tablename__ = "OfferCards"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    key = Column(String(255), unique=True, nullable=False)
-    name = Column(String(255), nullable=False)
-    description = Column(String(255), nullable=False)
-    monthly = Column(String(255), nullable=False)
-    yearly = Column(String(255), nullable=False)
-    features = Column(String(500), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(255))
+    description = Column(Text)
+    monthly = Column(Numeric(10, 2), nullable=False)
+    yearly = Column(Numeric(10, 2), nullable=False)
+    features = Column(JSON, default=list)
     highlight = Column(Boolean, default=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)

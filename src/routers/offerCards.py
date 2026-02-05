@@ -1,7 +1,10 @@
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, Field, condecimal
 from sqlalchemy import select
-from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import require_editor
@@ -27,13 +30,21 @@ async def list_offer_cards(
 # ---------------------------------------------------------
 # POST /offer-cards
 # ---------------------------------------------------------
+from typing import List
+
+
+class FeatureItem(BaseModel):
+    labelKey: str | None = None
+    order: int = Field(ge=0)
+    isVisible: bool = True
+
+
 class OfferCardCreate(BaseModel):
-    key: str
     name: str
     description: str
-    monthly: str
-    yearly: str
-    features: str
+    monthly: condecimal(ge=Decimal("0.01"), decimal_places=2)
+    yearly: condecimal(ge=Decimal("0.01"), decimal_places=2)
+    features: List[FeatureItem] = []
     highlight: bool = False
     order: int = 0
     isVisible: bool = True
@@ -45,9 +56,37 @@ async def create_offer_card(
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
+    # Валидация
+    if payload.monthly < Decimal("0.01"):
+        raise HTTPException(
+            422,
+            detail={"field": "monthly", "message": "Минимальная стоимость — 0.01"}
+        )
+
+    if payload.yearly < Decimal("0.01"):
+        raise HTTPException(
+            422,
+            detail={"field": "yearly", "message": "Минимальная стоимость — 0.01"}
+        )
+
+    if not payload.features:
+        raise HTTPException(
+            422,
+            detail={"field": "features", "message": "Добавьте хотя бы одну фичу"}
+        )
+
     card = OfferCard(**payload.dict())
+
     session.add(card)
-    await session.commit()
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        raise HTTPException(
+            400,
+            detail={"message": "Ошибка базы данных", "error": str(exc.orig)}
+        )
+
     await session.refresh(card)
 
     redis = get_redis()
@@ -59,12 +98,18 @@ async def create_offer_card(
 # ---------------------------------------------------------
 # PATCH /offer-cards/{id}
 # ---------------------------------------------------------
+class FeatureItemUpdate(BaseModel):
+    labelKey: str = Field(..., min_length=1, max_length=255)
+    order: int = Field(ge=0)
+    isVisible: bool = True
+
+
 class OfferCardUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    monthly: str | None = None
-    yearly: str | None = None
-    features: str | None = None
+    monthly: condecimal(ge=Decimal("0.01"), decimal_places=2) | None = None
+    yearly: condecimal(ge=Decimal("0.01"), decimal_places=2) | None = None
+    features: list[FeatureItemUpdate] | None = None
     highlight: bool | None = None
     order: int | None = None
     isVisible: bool | None = None
@@ -72,19 +117,38 @@ class OfferCardUpdate(BaseModel):
 
 @router.patch("/{id}")
 async def update_offer_card(
-        id: str,   # UUID
+        id: str,
         payload: OfferCardUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
     card = await session.get(OfferCard, id)
     if not card:
-        raise HTTPException(404, "OfferCard not found")
+        raise HTTPException(
+            404,
+            detail={"field": "id", "message": "Карточка не найдена"}
+        )
+
+    # Проверяем фичи
+    if payload.features:
+        for f in payload.features:
+            if not f.labelKey:
+                raise HTTPException(
+                    422,
+                    detail={"field": "features.labelKey", "message": "labelKey обязателен"}
+                )
 
     for k, v in payload.dict(exclude_unset=True).items():
         setattr(card, k, v)
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        raise HTTPException(
+            400,
+            detail={"message": "Ошибка базы данных", "error": str(exc.orig)}
+        )
+
     await session.refresh(card)
 
     redis = get_redis()
@@ -98,7 +162,7 @@ async def update_offer_card(
 # ---------------------------------------------------------
 @router.delete("/{id}")
 async def delete_offer_card(
-        id: str,   # UUID
+        id: str,  # UUID
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
