@@ -1,10 +1,10 @@
 import uuid
-
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy import (
-    Column, Integer, String, Enum, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON, VARCHAR, Text, Numeric
+    Column, Integer, String, Enum, Boolean, DateTime, ForeignKey, UniqueConstraint, JSON, VARCHAR, Text, Numeric, CHAR
 )
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, UTC
 from ..db.base import Base
 
 
@@ -280,3 +280,17 @@ class FeatureCard(Base):
     descriptionKey = Column(String(255), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
+
+
+class Service(Base):
+    __tablename__ = "services"
+
+    id = Column(CHAR(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    titleKey = Column(String(255), nullable=False)
+    descriptionKey = Column(String(255), nullable=False)
+    link = Column(String(512), nullable=True)
+    image = Column(String(512), nullable=True)
+    category = Column(String(64), nullable=False)
+    order = Column(Integer, default=0)
+    isVisible = Column(Boolean, default=True)
+    createdAt = Column(DateTime, default=lambda: datetime.now(UTC))

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
-from ..deps.require_user import require_permission
+from ..deps.require_user import require_permission, require_editor
 from ..models.models import Language, TranslationKey, TranslationValue
 from ..utils.flatten_tree import flatten_tree
 from ..utils.redis_client import get_redis
@@ -249,7 +249,7 @@ class CreateTranslationPayload(BaseModel):
 async def create_translation(
         payload: list[CreateTranslationPayload],
         session: AsyncSession = Depends(get_session),
-        user=Depends(require_permission("translations", "create")),
+        user=Depends(require_editor),
 ):
     languages = {
         lang.code: lang
@@ -327,7 +327,7 @@ class UpdatePayload(BaseModel):
 async def update_translations(
         payload: UpdatePayload,
         session: AsyncSession = Depends(get_session),
-        user=Depends(require_permission("translations", "update")),
+        user=Depends(require_editor),
 ):
     languages = {
         lang.code: lang
@@ -399,7 +399,7 @@ class DeletePayload(BaseModel):
 async def delete_translations(
         payload: DeletePayload,
         session: AsyncSession = Depends(get_session),
-        user=Depends(require_permission("translations", "delete")),
+        user=Depends(require_editor),
 ):
     if not payload.keys:
         return {"status": "deleted", "count": 0}
