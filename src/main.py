@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .routers import languages, translations, testimonials, headerMenu, users, auth, offerCards, contacts, footer, \
-    featureCards, cleanup, services
+    featureCards, cleanup, services, serviceCategories, pdf
 from .models.models import Base
 from .db.session import engine
 from .init_admin import init_admin
@@ -50,3 +50,4 @@ app.include_router(footer.router)
 app.include_router(featureCards.router)
 app.include_router(cleanup.router)
 app.include_router(services.router)
+app.include_router(serviceCategories.router)
