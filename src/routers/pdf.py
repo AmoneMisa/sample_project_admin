@@ -124,11 +124,19 @@ class RotateOptions(BaseModel):
 
 class WatermarkTextOptions(BaseModel):
     text: str = Field(min_length=1, max_length=80)
-    opacity: int = Field(ge=5, le=60, default=30)
+    opacity: int = Field(ge=5, le=100, default=30)
     page: int = 1
     x: float = 72
     y: float = 72
-    fontSize: int = Field(ge=8, le=72, default=32)
+    fontSize: int = Field(ge=8, le=120, default=32)
+
+    color: str = Field(default="#ffffff")
+    font: str = Field(default="Helvetica")
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    align: Literal["left", "center", "right"] = "left"
+    maxWidth: Optional[float] = None
 
 
 class WatermarkImageOptions(BaseModel):
@@ -425,7 +433,14 @@ async def apply_tool(
                 text=opt.text,
                 opacity=opt.opacity,
                 font_size=opt.fontSize,
-            )
+                color=opt.color,
+                font=opt.font,
+                bold=opt.bold,
+                italic=opt.italic,
+                underline=opt.underline,
+                align=opt.align,
+                max_width=opt.maxWidth,
+            );
 
         elif tool == "watermark_image":
             if not image:
@@ -595,17 +610,57 @@ async def preview(job_id: str, page: int, dpi: int = 144):
     return FileResponse(out_png, media_type="image/png")
 
 
+from pypdf.generic import NameObject
+
+
+def _safe_page_box(page):
+    box = None
+    try:
+        box = page.get(NameObject("/CropBox"))
+    except Exception:
+        box = None
+    if box is None:
+        try:
+            box = page.get(NameObject("/MediaBox"))
+        except Exception:
+            box = None
+
+    if box is None:
+        return 595.0, 842.0
+
+    try:
+        arr = list(box)
+        if len(arr) != 4:
+            return 595.0, 842.0
+        x0, y0, x1, y1 = [float(v) for v in arr]
+        w = abs(x1 - x0)
+        h = abs(y1 - y0)
+        if w <= 0 or h <= 0:
+            return 595.0, 842.0
+        return w, h
+    except Exception:
+        return 595.0, 842.0
+
+
 @router.get("/page-info/{job_id}")
 async def page_info(job_id: str):
     r = get_redis()
     job = await load_job(r, job_id)
-    src_pdf = job.active_path
 
-    reader = PdfReader(src_pdf)
+    path = job.active_path
+    if not os.path.exists(path):
+        err(404, "RESULT_MISSING", "Result file missing on server")
+
+    reader = PdfReader(path)
     pages = len(reader.pages)
 
-    # берём первую страницу как базовую (можно расширить на per-page)
-    mb = reader.pages[0].mediabox
-    w, h = float(mb.width), float(mb.height)
+    w, h = (595.0, 842.0)
+    if pages > 0:
+        w, h = _safe_page_box(reader.pages[0])
 
-    return {"pages": pages, "pageW": w, "pageH": h, "activeVersion": job.active_version}
+    return JSONResponse({
+        "pages": pages,
+        "pageW": w,
+        "pageH": h,
+        "activeVersion": job.active_version
+    })

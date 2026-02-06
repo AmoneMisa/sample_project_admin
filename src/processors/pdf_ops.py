@@ -4,8 +4,10 @@ import io
 from typing import List, Callable
 
 from pypdf import PdfReader, PdfWriter
-from reportlab.pdfgen import canvas
+from reportlab.lib.colors import Color
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfgen import canvas
 
 
 def merge_pdfs(inputs: List[str], out_path: str) -> None:
@@ -29,6 +31,57 @@ def rotate_pdf(input_pdf: str, out_path: str, degrees: int) -> None:
         writer.write(f)
 
 
+def _parse_hex_color(s: str) -> Color:
+    val = (s or "").strip()
+    if not val:
+        return Color(1, 1, 1)
+    if val.startswith("#"):
+        val = val[1:]
+    if len(val) == 3:
+        val = "".join([ch * 2 for ch in val])
+    if len(val) != 6:
+        return Color(1, 1, 1)
+    try:
+        r = int(val[0:2], 16) / 255.0
+        g = int(val[2:4], 16) / 255.0
+        b = int(val[4:6], 16) / 255.0
+        return Color(r, g, b)
+    except Exception:
+        return Color(1, 1, 1)
+
+
+def _pick_font(base: str, bold: bool, italic: bool) -> str:
+    b = (base or "Helvetica").strip().lower()
+    if b in ("helvetica", "arial"):
+        if bold and italic:
+            return "Helvetica-BoldOblique"
+        if bold:
+            return "Helvetica-Bold"
+        if italic:
+            return "Helvetica-Oblique"
+        return "Helvetica"
+
+    if b in ("times", "times-roman", "timesroman", "times new roman"):
+        if bold and italic:
+            return "Times-BoldItalic"
+        if bold:
+            return "Times-Bold"
+        if italic:
+            return "Times-Italic"
+        return "Times-Roman"
+
+    if b in ("courier", "monospace", "mono"):
+        if bold and italic:
+            return "Courier-BoldOblique"
+        if bold:
+            return "Courier-Bold"
+        if italic:
+            return "Courier-Oblique"
+        return "Courier"
+
+    return "Helvetica-Bold" if bold else "Helvetica"
+
+
 def watermark_text(
         input_pdf: str,
         out_path: str,
@@ -39,6 +92,13 @@ def watermark_text(
         text: str,
         opacity: int = 30,
         font_size: int = 32,
+        color: str = "#ffffff",
+        font: str = "Helvetica",
+        bold: bool = False,
+        italic: bool = False,
+        underline: bool = False,
+        align: str = "left",
+        max_width: float | None = None,
 ) -> None:
     reader = PdfReader(input_pdf)
     idx = page - 1
@@ -48,15 +108,62 @@ def watermark_text(
     mb = reader.pages[idx].mediabox
     w, h = float(mb.width), float(mb.height)
 
+    fnt = _pick_font(font, bold, italic)
+    col = _parse_hex_color(color)
+    a = (align or "left").strip().lower()
+
     def draw(c: canvas.Canvas, _w: float, _h: float) -> None:
         c.saveState()
         try:
             c.setFillAlpha(opacity / 100.0)
         except Exception:
             pass
-        c.setFont("Helvetica-Bold", font_size)
-        c.setFillColorRGB(1, 1, 1)
-        c.drawString(x, y, text)
+
+        c.setFont(fnt, font_size)
+        c.setFillColor(col)
+
+        s = text or ""
+        if not s:
+            c.restoreState()
+            return
+
+        draw_x = x
+        text_w = pdfmetrics.stringWidth(s, fnt, font_size)
+
+        if max_width and max_width > 0:
+            if a == "center":
+                draw_x = x + (max_width - text_w) / 2.0
+            elif a == "right":
+                draw_x = x + (max_width - text_w)
+            elif a == "justify":
+                spaces = s.count(" ")
+                if spaces > 0:
+                    extra = max_width - text_w
+                    if extra > 0:
+                        t = c.beginText()
+                        t.setTextOrigin(x, y)
+                        try:
+                            t.setWordSpace(extra / spaces)
+                        except Exception:
+                            pass
+                        t.textOut(s)
+                        c.drawText(t)
+                        if underline:
+                            ul_y = y - max(1.0, font_size * 0.12)
+                            c.setLineWidth(max(0.8, font_size * 0.06))
+                            c.setStrokeColor(col)
+                            c.line(x, ul_y, x + max_width, ul_y)
+                        c.restoreState()
+                        return
+
+        c.drawString(draw_x, y, s)
+
+        if underline:
+            ul_y = y - max(1.0, font_size * 0.12)
+            c.setLineWidth(max(0.8, font_size * 0.06))
+            c.setStrokeColor(col)
+            c.line(draw_x, ul_y, draw_x + text_w, ul_y)
+
         c.restoreState()
 
     overlay = _make_overlay_pdf(w, h, draw)
