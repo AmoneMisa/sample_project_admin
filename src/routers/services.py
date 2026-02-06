@@ -45,13 +45,13 @@ class ServiceCreate(BaseModel):
 
 
 class ServiceUpdate(BaseModel):
-    titleKey: Optional[str]
-    descriptionKey: Optional[str]
-    link: Optional[str]
-    image: Optional[str]
-    category: Optional[str]
-    order: Optional[int]
-    isVisible: Optional[bool]
+    titleKey: Optional[str] = None
+    descriptionKey: Optional[str] = None
+    link: Optional[str] = None
+    image: Optional[str] = None
+    category: Optional[str] = None
+    order: Optional[int] = None
+    isVisible: Optional[bool] = None
 
 
 # -----------------------------
