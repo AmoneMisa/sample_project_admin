@@ -598,3 +598,18 @@ async def preview(job_id: str, page: int, dpi: int = 144):
         err(500, "PREVIEW_FAILED", "Failed to render preview", {"error": str(e)})
 
     return FileResponse(out_png, media_type="image/png")
+
+@router.get("/page-info/{job_id}")
+async def page_info(job_id: str):
+    r = get_redis()
+    job = await load_job(r, job_id)
+    src_pdf = job.active_path
+
+    reader = PdfReader(src_pdf)
+    pages = len(reader.pages)
+
+    # берём первую страницу как базовую (можно расширить на per-page)
+    mb = reader.pages[0].mediabox
+    w, h = float(mb.width), float(mb.height)
+
+    return {"pages": pages, "pageW": w, "pageH": h, "activeVersion": job.active_version}
