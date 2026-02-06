@@ -12,6 +12,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from ..processors.pdf_preview import render_pdf_page_to_png
+from ..utils.redis_client import get_redis
 
 try:
     import magic  # python-magic
@@ -56,15 +57,6 @@ _redis_client: Optional[Redis] = None
 
 def err(status: int, code: str, message: str, meta: Optional[dict] = None):
     raise HTTPException(status_code=status, detail={"code": code, "message": message, "meta": meta or {}})
-
-
-def get_redis() -> Redis:
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    _redis_client = Redis.from_url(url, decode_responses=True)
-    return _redis_client
 
 
 def now_ts() -> int:
@@ -227,12 +219,15 @@ async def save_job(r: Redis, job: Job):
     ttl = max(1, job.expiresAt - now_ts())
     await r.set(job_key(job.jobId), job.to_json(), ex=ttl)
 
+
 def preview_folder(job_id: str) -> str:
     return os.path.join(job_folder(job_id), "previews")
+
 
 def preview_path(job_id: str, version: int, page: int, dpi: int) -> str:
     # version включаем в ключ, чтобы превью не было “старым” после apply
     return os.path.join(preview_folder(job_id), f"v{version}_p{page}_dpi{dpi}.png")
+
 
 def job_folder(job_id: str) -> str:
     return os.path.join(STORAGE_ROOT, job_id)
@@ -598,6 +593,7 @@ async def preview(job_id: str, page: int, dpi: int = 144):
         err(500, "PREVIEW_FAILED", "Failed to render preview", {"error": str(e)})
 
     return FileResponse(out_png, media_type="image/png")
+
 
 @router.get("/page-info/{job_id}")
 async def page_info(job_id: str):
