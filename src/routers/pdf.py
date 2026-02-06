@@ -29,7 +29,7 @@ from ..processors.pdf_ops import (
     draw_signature,
 )
 
-router = APIRouter(prefix="/api/pdf", tags=["pdf"])
+router = APIRouter(prefix="/pdf", tags=["pdf"])
 
 # ----------------------------
 # Config
