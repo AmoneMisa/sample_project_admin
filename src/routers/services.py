@@ -24,7 +24,7 @@ class ServiceBase(BaseModel):
     descriptionKey: str = Field(..., alias="descriptionKey")
     link: Optional[str]
     image: Optional[str]
-    category: str
+    categoryId: UUID = Field(..., alias="categoryId")
     order: int
     isVisible: bool = Field(..., alias="isVisible")
     createdAt: datetime = Field(..., alias="createdAt")
@@ -39,7 +39,7 @@ class ServiceCreate(BaseModel):
     descriptionKey: str
     link: Optional[str]
     image: Optional[str]
-    category: str
+    categoryId: UUID
     order: int = 0
     isVisible: bool = True
 
@@ -49,7 +49,7 @@ class ServiceUpdate(BaseModel):
     descriptionKey: Optional[str] = None
     link: Optional[str] = None
     image: Optional[str] = None
-    category: Optional[str] = None
+    categoryId: Optional[UUID] = None
     order: Optional[int] = None
     isVisible: Optional[bool] = None
 
@@ -90,7 +90,7 @@ async def create_service(payload: ServiceCreate, db: AsyncSession = Depends(get_
         descriptionKey=payload.descriptionKey,
         link=payload.link,
         image=payload.image,
-        category=payload.category,
+        categoryId=str(payload.categoryId),
         order=payload.order,
         isVisible=payload.isVisible,
     )
@@ -98,7 +98,6 @@ async def create_service(payload: ServiceCreate, db: AsyncSession = Depends(get_
     db.add(service)
     await db.commit()
     await db.refresh(service)
-
     return service
 
 
@@ -107,11 +106,12 @@ async def update_service(service_id: UUID, payload: ServiceUpdate, db: AsyncSess
     service = await get_service_or_404(db, service_id)
 
     for field, value in payload.dict(exclude_unset=True).items():
+        if field == "categoryId" and value is not None:
+            value = str(value)
         setattr(service, field, value)
 
     await db.commit()
     await db.refresh(service)
-
     return service
 
 

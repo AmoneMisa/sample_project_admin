@@ -281,6 +281,15 @@ class FeatureCard(Base):
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
+class ServiceCategory(Base):
+    __tablename__ = "ServiceCategories"
+    id = Column(CHAR(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    titleKey = Column(String(255), nullable=False)
+    descriptionKey = Column(String(255), nullable=False)
+    order = Column(Integer, default=0)
+    isVisible = Column(Boolean, default=True)
+    createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
+    services = relationship("Service", back_populates="categoryRel")
 
 class Service(Base):
     __tablename__ = "services"
@@ -290,7 +299,12 @@ class Service(Base):
     descriptionKey = Column(String(255), nullable=False)
     link = Column(String(512), nullable=True)
     image = Column(String(512), nullable=True)
-    category = Column(String(64), nullable=False)
+    categoryId = Column(
+        CHAR(36),
+        ForeignKey("ServiceCategories.id", ondelete="RESTRICT"),
+        nullable=False
+    )
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
     createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
+    categoryRel = relationship("ServiceCategory", back_populates="services")
