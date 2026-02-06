@@ -8,7 +8,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, List, Dict
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from ..processors.pdf_preview import render_pdf_page_to_png
@@ -129,13 +129,12 @@ class WatermarkTextOptions(BaseModel):
     x: float = 72
     y: float = 72
     fontSize: int = Field(ge=8, le=120, default=32)
-
     color: str = Field(default="#ffffff")
     font: str = Field(default="Helvetica")
     bold: bool = False
     italic: bool = False
     underline: bool = False
-    align: Literal["left", "center", "right"] = "left"
+    align: Literal["left", "center", "right", "justify"] = "left"
     maxWidth: Optional[float] = None
 
 
@@ -157,6 +156,7 @@ class DrawSignatureOptions(BaseModel):
     strokes: List[List[List[float]]] = Field(min_length=1)
     strokeWidth: float = Field(ge=0.5, le=8.0, default=2.0)
     opacity: int = Field(ge=10, le=100, default=100)
+    color: str = Field(default="#ffffff")  # ✅ add
 
 
 # ----------------------------
@@ -440,7 +440,7 @@ async def apply_tool(
                 underline=opt.underline,
                 align=opt.align,
                 max_width=opt.maxWidth,
-            );
+            )
 
         elif tool == "watermark_image":
             if not image:
@@ -482,6 +482,7 @@ async def apply_tool(
                 strokes=opt.strokes,
                 stroke_width=opt.strokeWidth,
                 opacity=opt.opacity,
+                color=opt.color,  # ✅ pass through
             )
 
         else:
@@ -504,7 +505,6 @@ async def apply_tool(
         )
 
     except ValueError as e:
-        # processors raise ValueError for invalid page etc.
         err(400, "BAD_OPTIONS", str(e))
     except HTTPException:
         raise
@@ -565,51 +565,9 @@ async def delete_job(job_id: str):
     return JSONResponse({"ok": True})
 
 
-@router.get("/preview/{job_id}/{page}")
-async def preview(job_id: str, page: int, dpi: int = 144):
-    """
-    Returns PNG preview of a page for the CURRENT active version.
-    dpi is clamped for sanity.
-    """
-    # sanity dpi
-    if dpi < 72:
-        dpi = 72
-    if dpi > 220:
-        dpi = 220
-
-    r = get_redis()
-    job = await load_job(r, job_id)
-
-    src_pdf = job.active_path
-    if not os.path.exists(src_pdf):
-        err(404, "RESULT_MISSING", "Result file missing on server")
-
-    # also validate page range quickly
-    try:
-        reader = PdfReader(src_pdf)
-        total = len(reader.pages)
-    except Exception:
-        err(500, "PDF_READ_FAILED", "Unable to read PDF")
-
-    if page < 1 or page > total:
-        err(400, "BAD_OPTIONS", "Invalid page number", {"page": page, "totalPages": total})
-
-    out_png = preview_path(job_id, job.active_version, page, dpi)
-
-    # cache: if exists, return immediately
-    if os.path.exists(out_png):
-        return FileResponse(out_png, media_type="image/png")
-
-    try:
-        render_pdf_page_to_png(src_pdf, out_png, page=page, dpi=dpi)
-    except ValueError as e:
-        err(400, "BAD_OPTIONS", str(e))
-    except Exception as e:
-        err(500, "PREVIEW_FAILED", "Failed to render preview", {"error": str(e)})
-
-    return FileResponse(out_png, media_type="image/png")
-
-
+# ----------------------------
+# PDF helpers for safe page reading
+# ----------------------------
 from pypdf.generic import NameObject
 
 
@@ -642,6 +600,69 @@ def _safe_page_box(page):
         return 595.0, 842.0
 
 
+def _safe_pdf_num_pages(path: str) -> int:
+    try:
+        reader = PdfReader(path)
+        return len(reader.pages)
+    except Exception:
+        return 0
+
+
+@router.get("/preview/{job_id}/{page}")
+async def preview(
+        job_id: str,
+        page: int,
+        dpi: int = 144,
+        v: Optional[int] = Query(default=None),  # ✅ allow frontend to request specific version
+):
+    """
+    Returns PNG preview of a page.
+    If `v` is provided, renders that version (if it exists in job.versions), otherwise active.
+    dpi is clamped for sanity.
+    """
+    if dpi < 72:
+        dpi = 72
+    if dpi > 220:
+        dpi = 220
+
+    r = get_redis()
+    job = await load_job(r, job_id)
+
+    # choose version to render
+    src_pdf = job.active_path
+    ver = job.active_version
+    if v is not None:
+        # try to find matching version in job.versions
+        match = next((it for it in job.versions if int(it.get("v", -1)) == int(v)), None)
+        if match:
+            src_pdf = match["path"]
+            ver = int(match["v"])
+
+    if not os.path.exists(src_pdf):
+        err(404, "RESULT_MISSING", "Result file missing on server")
+
+    total = _safe_pdf_num_pages(src_pdf)
+    if total <= 0:
+        err(500, "PDF_READ_FAILED", "Unable to read PDF")
+
+    if page < 1 or page > total:
+        err(400, "BAD_OPTIONS", "Invalid page number", {"page": page, "totalPages": total})
+
+    out_png = preview_path(job_id, ver, page, dpi)
+
+    if os.path.exists(out_png):
+        return FileResponse(out_png, media_type="image/png")
+
+    try:
+        render_pdf_page_to_png(src_pdf, out_png, page=page, dpi=dpi)
+    except ValueError as e:
+        err(400, "BAD_OPTIONS", str(e))
+    except Exception as e:
+        err(500, "PREVIEW_FAILED", "Failed to render preview", {"error": str(e)})
+
+    return FileResponse(out_png, media_type="image/png")
+
+
 @router.get("/page-info/{job_id}")
 async def page_info(job_id: str):
     r = get_redis()
@@ -658,9 +679,11 @@ async def page_info(job_id: str):
     if pages > 0:
         w, h = _safe_page_box(reader.pages[0])
 
-    return JSONResponse({
-        "pages": pages,
-        "pageW": w,
-        "pageH": h,
-        "activeVersion": job.active_version
-    })
+    return JSONResponse(
+        {
+            "pages": pages,
+            "pageW": w,
+            "pageH": h,
+            "activeVersion": job.active_version,
+        }
+    )
