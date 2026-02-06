@@ -28,12 +28,22 @@ def api_error(code: str, message: str, status: int = 400, field: str | None = No
     raise HTTPException(status_code=status, detail=detail)
 
 
-def normalize_value_for_db(value: Union[str, int, float, None]) -> Union[str, int, float, None]:
-    if isinstance(value, (str, int, float)) or value is None:
-        return value
+def normalize_value_for_db(value):
+    # None → JSON null
+    if value is None:
+        return "null"
+
+    # строки и числа → превращаем в JSON-строку
+    if isinstance(value, (str, int, float)):
+        return json.dumps(value, ensure_ascii=False)
+
+    # объекты и массивы → сериализуем как есть
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+
     api_error(
         "INVALID_VALUE_TYPE",
-        "Значение перевода должно быть строкой или числом",
+        f"Неподдерживаемый тип значения: {type(value)}",
         status=422,
     )
 
