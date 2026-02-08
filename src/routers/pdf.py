@@ -5,30 +5,28 @@ import json
 import time
 import uuid
 import shutil
-from dataclasses import dataclass
-from typing import Any, Literal, Optional, List, Dict
+import base64
+from typing import Optional, Dict, Any, List
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from ..processors.pdf_preview import render_pdf_page_to_png
+
+from pypdf import PdfReader
+from pypdf.generic import NameObject
+
+from redis.asyncio import Redis
 from ..utils.redis_client import get_redis
+
+from ..processors.pdf_preview import render_pdf_page_to_png
+from ..processors.pdf_ops import merge_pdfs  # (старый мердж оставляем)
+from ..processors.pdf_ops_new import apply_png_overlays  # (новый рендер поверх)
 
 try:
     import magic  # python-magic
 except Exception:
     magic = None  # type: ignore
 
-from pypdf import PdfReader
-
-# ✅ operations moved to processors
-from ..processors.pdf_ops import (
-    merge_pdfs,
-    rotate_pdf,
-    watermark_text,
-    watermark_image,
-    draw_signature,
-)
 
 router = APIRouter(prefix="/pdf", tags=["pdf"])
 
@@ -36,225 +34,67 @@ router = APIRouter(prefix="/pdf", tags=["pdf"])
 # Config
 # ----------------------------
 STORAGE_ROOT = os.getenv("PDF_STORAGE_ROOT", "/var/app/storage/pdf")
-TTL_SECONDS = int(os.getenv("PDF_TTL_SECONDS", "3600"))
+
+DRAFT_TTL_SECONDS = int(os.getenv("PDF_DRAFT_TTL_SECONDS", "86400"))   # 24h
+RESULT_TTL_SECONDS = int(os.getenv("PDF_RESULT_TTL_SECONDS", "3600"))  # 1h
 
 MAX_FILE_SIZE = int(os.getenv("PDF_MAX_FILE_SIZE", str(50 * 1024 * 1024)))  # 50MB
 MAX_FILES = int(os.getenv("PDF_MAX_FILES", "10"))
 MAX_PAGES = int(os.getenv("PDF_MAX_PAGES", "500"))
 
-MAX_VERSIONS = 5
-MAX_IMAGE_SIZE = int(os.getenv("PDF_MAX_IMAGE_SIZE", str(5 * 1024 * 1024)))  # 5MB
-
-Tool = Literal["merge", "rotate", "watermark_text", "watermark_image", "draw_signature"]
-
 # ----------------------------
-# Redis
+# Helpers
 # ----------------------------
-from redis.asyncio import Redis
-
-_redis_client: Optional[Redis] = None
-
-
-def err(status: int, code: str, message: str, meta: Optional[dict] = None):
-    raise HTTPException(status_code=status, detail={"code": code, "message": message, "meta": meta or {}})
-
-
 def now_ts() -> int:
     return int(time.time())
-
-
-def job_key(job_id: str) -> str:
-    return f"pdf:job:{job_id}"
-
 
 def ensure_storage_root():
     os.makedirs(STORAGE_ROOT, exist_ok=True)
 
+def doc_folder(doc_id: str) -> str:
+    return os.path.join(STORAGE_ROOT, doc_id)
+
+def source_path(doc_id: str) -> str:
+    return os.path.join(doc_folder(doc_id), "source.pdf")
+
+def result_path(doc_id: str) -> str:
+    return os.path.join(doc_folder(doc_id), "result.pdf")
+
+def preview_folder(doc_id: str) -> str:
+    return os.path.join(doc_folder(doc_id), "previews")
+
+def preview_path(doc_id: str, page: int, dpi: int) -> str:
+    return os.path.join(preview_folder(doc_id), f"p{page}_dpi{dpi}.png")
 
 def safe_filename(name: str, fallback: str) -> str:
     base = os.path.basename(name or "").strip()
     return base if base else fallback
 
-
-# ----------------------------
-# Schemas
-# ----------------------------
-class JobCreateResponse(BaseModel):
-    jobId: str
-    status: Literal["done"]
-    cursor: int
-    versions: int
-    downloadUrl: str
-    expiresAt: int
-
-
-class JobStatusResponse(BaseModel):
-    jobId: str
-    status: Literal["done", "failed"]
-    cursor: int
-    versions: int
-    activeVersion: int
-    expiresAt: int
-    lastTool: Optional[str] = None
-    lastError: Optional[str] = None
-
-
-class ApplyToolResponse(BaseModel):
-    jobId: str
-    status: Literal["done"]
-    cursor: int
-    versions: int
-    activeVersion: int
-    downloadUrl: str
-    expiresAt: int
-
-
-class UndoRedoResponse(BaseModel):
-    jobId: str
-    cursor: int
-    versions: int
-    activeVersion: int
-    downloadUrl: str
-    expiresAt: int
-
-
-class RotateOptions(BaseModel):
-    degrees: Literal[0, 90, 180, 270] = 90
-
-
-class WatermarkTextOptions(BaseModel):
-    text: str = Field(min_length=1, max_length=80)
-    opacity: int = Field(ge=5, le=100, default=30)
-    page: int = 1
-    x: float = 72
-    y: float = 72
-    fontSize: int = Field(ge=8, le=120, default=32)
-    color: str = Field(default="#ffffff")
-    font: str = Field(default="Helvetica")
-    bold: bool = False
-    italic: bool = False
-    underline: bool = False
-    align: Literal["left", "center", "right", "justify"] = "left"
-    maxWidth: Optional[float] = None
-
-
-class WatermarkImageOptions(BaseModel):
-    page: int = 1
-    x: float = 72
-    y: float = 72
-    w: float = 220
-    h: float = 80
-    opacity: int = Field(ge=5, le=100, default=100)
-
-
-class DrawSignatureOptions(BaseModel):
-    page: int = 1
-    x: float = 72
-    y: float = 72
-    w: float = 260
-    h: float = 120
-    strokes: List[List[List[float]]] = Field(min_length=1)
-    strokeWidth: float = Field(ge=0.5, le=8.0, default=2.0)
-    opacity: int = Field(ge=10, le=100, default=100)
-    color: str = Field(default="#ffffff")  # ✅ add
-
-
-# ----------------------------
-# Job model
-# ----------------------------
-@dataclass
-class Job:
-    jobId: str
-    createdAt: int
-    expiresAt: int
-    status: str
-    cursor: int
-    versions: List[Dict[str, Any]]
-    lastTool: Optional[str] = None
-    lastError: Optional[str] = None
-
-    @property
-    def active_version(self) -> int:
-        return self.versions[self.cursor - 1]["v"]
-
-    @property
-    def active_path(self) -> str:
-        return self.versions[self.cursor - 1]["path"]
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "jobId": self.jobId,
-                "createdAt": self.createdAt,
-                "expiresAt": self.expiresAt,
-                "status": self.status,
-                "cursor": self.cursor,
-                "versions": self.versions,
-                "lastTool": self.lastTool,
-                "lastError": self.lastError,
-            }
-        )
-
-    @staticmethod
-    def from_json(s: str) -> "Job":
-        d = json.loads(s)
-        return Job(
-            jobId=d["jobId"],
-            createdAt=d["createdAt"],
-            expiresAt=d["expiresAt"],
-            status=d["status"],
-            cursor=d["cursor"],
-            versions=d["versions"],
-            lastTool=d.get("lastTool"),
-            lastError=d.get("lastError"),
-        )
-
-
-async def load_job(r: Redis, job_id: str) -> Job:
-    raw = await r.get(job_key(job_id))
-    if not raw:
-        err(404, "JOB_NOT_FOUND", "Job not found or expired")
-
-    job = Job.from_json(raw)
-    if job.expiresAt <= now_ts():
-        await r.delete(job_key(job_id))
-        safe_remove_job_folder(job_id)
-        err(410, "JOB_EXPIRED", "Job expired")
-    return job
-
-
-async def save_job(r: Redis, job: Job):
-    ttl = max(1, job.expiresAt - now_ts())
-    await r.set(job_key(job.jobId), job.to_json(), ex=ttl)
-
-
-def preview_folder(job_id: str) -> str:
-    return os.path.join(job_folder(job_id), "previews")
-
-
-def preview_path(job_id: str, version: int, page: int, dpi: int) -> str:
-    # version включаем в ключ, чтобы превью не было “старым” после apply
-    return os.path.join(preview_folder(job_id), f"v{version}_p{page}_dpi{dpi}.png")
-
-
-def job_folder(job_id: str) -> str:
-    return os.path.join(STORAGE_ROOT, job_id)
-
-
-def version_path(job_id: str, v: int) -> str:
-    return os.path.join(job_folder(job_id), f"v{v}.pdf")
-
-
-def safe_remove_job_folder(job_id: str):
+def safe_remove_doc_folder(doc_id: str):
     try:
-        shutil.rmtree(job_folder(job_id), ignore_errors=True)
+        shutil.rmtree(doc_folder(doc_id), ignore_errors=True)
     except Exception:
         pass
 
+def validate_pdf_signature(path: str):
+    with open(path, "rb") as f:
+        head = f.read(5)
+    if head != b"%PDF-":
+        raise HTTPException(415, "Uploaded file is not a valid PDF (missing %PDF- header)")
 
-# ----------------------------
-# Validation
-# ----------------------------
+def validate_pdf_mime(path: str):
+    if magic is None:
+        return
+    mime = magic.from_file(path, mime=True)
+    if mime != "application/pdf":
+        raise HTTPException(415, f"Only PDF allowed (detected {mime})")
+
+def validate_pages_limit(path: str):
+    reader = PdfReader(path)
+    pages = len(reader.pages)
+    if pages > MAX_PAGES:
+        raise HTTPException(413, f"Max pages is {MAX_PAGES}")
+
 async def save_upload_validated(upload: UploadFile, dest_path: str, max_size: int) -> int:
     written = 0
     with open(dest_path, "wb") as out:
@@ -264,312 +104,9 @@ async def save_upload_validated(upload: UploadFile, dest_path: str, max_size: in
                 break
             written += len(chunk)
             if written > max_size:
-                err(413, "FILE_TOO_LARGE", f"Max file size is {max_size} bytes")
+                raise HTTPException(413, f"Max file size is {max_size} bytes")
             out.write(chunk)
     return written
-
-
-def validate_pdf_signature(path: str):
-    with open(path, "rb") as f:
-        head = f.read(5)
-    if head != b"%PDF-":
-        err(415, "UNSUPPORTED_TYPE", "Uploaded file is not a valid PDF (missing %PDF- header)")
-
-
-def validate_pdf_mime(path: str):
-    if magic is None:
-        return
-    mime = magic.from_file(path, mime=True)
-    if mime != "application/pdf":
-        err(415, "UNSUPPORTED_TYPE", f"Only PDF allowed (detected {mime})")
-
-
-def validate_pages_limit(path: str):
-    reader = PdfReader(path)
-    pages = len(reader.pages)
-    if pages > MAX_PAGES:
-        err(413, "TOO_MANY_PAGES", f"Max pages is {MAX_PAGES}", {"pages": pages})
-
-
-def copy_as_result(src: str, dst: str):
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copyfile(src, dst)
-
-
-# ----------------------------
-# Routes
-# ----------------------------
-@router.post("/create", response_model=JobCreateResponse)
-async def create_job(files: List[UploadFile] = File(...)):
-    ensure_storage_root()
-
-    if not files:
-        err(400, "NO_FILES", "No files uploaded")
-    if len(files) > MAX_FILES:
-        err(413, "TOO_MANY_FILES", f"Max files is {MAX_FILES}")
-
-    job_id = str(uuid.uuid4())
-    folder = job_folder(job_id)
-    os.makedirs(folder, exist_ok=True)
-
-    saved_paths: List[str] = []
-    try:
-        for i, f in enumerate(files):
-            tmp_path = os.path.join(folder, safe_filename(f.filename, f"upload_{i}.pdf"))
-            await save_upload_validated(f, tmp_path, MAX_FILE_SIZE)
-            validate_pdf_signature(tmp_path)
-            validate_pdf_mime(tmp_path)
-            validate_pages_limit(tmp_path)
-            saved_paths.append(tmp_path)
-    finally:
-        for f in files:
-            try:
-                await f.close()
-            except Exception:
-                pass
-
-    v1 = version_path(job_id, 1)
-    if len(saved_paths) == 1:
-        copy_as_result(saved_paths[0], v1)
-    else:
-        merge_pdfs(saved_paths, v1)
-
-    expires_at = now_ts() + TTL_SECONDS
-    job = Job(
-        jobId=job_id,
-        createdAt=now_ts(),
-        expiresAt=expires_at,
-        status="done",
-        cursor=1,
-        versions=[{"v": 1, "path": v1}],
-        lastTool="create",
-        lastError=None,
-    )
-
-    r = get_redis()
-    await save_job(r, job)
-
-    return JobCreateResponse(
-        jobId=job_id,
-        status="done",
-        cursor=job.cursor,
-        versions=len(job.versions),
-        downloadUrl=f"/api/pdf/download/{job_id}",
-        expiresAt=job.expiresAt,
-    )
-
-
-@router.get("/status/{job_id}", response_model=JobStatusResponse)
-async def status(job_id: str):
-    r = get_redis()
-    job = await load_job(r, job_id)
-    return JobStatusResponse(
-        jobId=job.jobId,
-        status=job.status,
-        cursor=job.cursor,
-        versions=len(job.versions),
-        activeVersion=job.active_version,
-        expiresAt=job.expiresAt,
-        lastTool=job.lastTool,
-        lastError=job.lastError,
-    )
-
-
-@router.get("/download/{job_id}")
-async def download(job_id: str):
-    r = get_redis()
-    job = await load_job(r, job_id)
-
-    path = job.active_path
-    if not os.path.exists(path):
-        err(404, "RESULT_MISSING", "Result file missing on server")
-
-    filename = f"pdf_{job_id}_v{job.active_version}.pdf"
-    return FileResponse(path, media_type="application/pdf", filename=filename)
-
-
-@router.post("/apply/{job_id}", response_model=ApplyToolResponse)
-async def apply_tool(
-        job_id: str,
-        tool: Tool = Form(...),
-        options: str = Form("{}"),
-        image: Optional[UploadFile] = File(None),
-):
-    r = get_redis()
-    job = await load_job(r, job_id)
-
-    try:
-        opts_raw = json.loads(options or "{}")
-    except Exception:
-        err(400, "BAD_OPTIONS", "Options must be valid JSON")
-
-    # if undo was used then apply new action => truncate redo tail
-    if job.cursor < len(job.versions):
-        job.versions = job.versions[: job.cursor]
-
-    if len(job.versions) >= MAX_VERSIONS:
-        err(409, "VERSION_LIMIT", f"Max versions is {MAX_VERSIONS}")
-
-    src = job.active_path
-    new_v = job.versions[-1]["v"] + 1
-    dst = version_path(job_id, new_v)
-
-    try:
-        if tool == "merge":
-            err(400, "BAD_OPTIONS", "Use /create with multiple files for merge")
-
-        elif tool == "rotate":
-            opt = RotateOptions(**opts_raw)
-            rotate_pdf(src, dst, opt.degrees)
-
-        elif tool == "watermark_text":
-            opt = WatermarkTextOptions(**opts_raw)
-            watermark_text(
-                src,
-                dst,
-                page=opt.page,
-                x=opt.x,
-                y=opt.y,
-                text=opt.text,
-                opacity=opt.opacity,
-                font_size=opt.fontSize,
-                color=opt.color,
-                font=opt.font,
-                bold=opt.bold,
-                italic=opt.italic,
-                underline=opt.underline,
-                align=opt.align,
-                max_width=opt.maxWidth,
-            )
-
-        elif tool == "watermark_image":
-            if not image:
-                err(400, "NO_IMAGE", "Image file is required for watermark_image")
-
-            folder = job_folder(job_id)
-            img_path = os.path.join(folder, f"wm_{uuid.uuid4().hex}_{safe_filename(image.filename, 'image')}")
-            try:
-                await save_upload_validated(image, img_path, MAX_IMAGE_SIZE)
-            finally:
-                try:
-                    await image.close()
-                except Exception:
-                    pass
-
-            opt = WatermarkImageOptions(**opts_raw)
-            watermark_image(
-                src,
-                dst,
-                page=opt.page,
-                x=opt.x,
-                y=opt.y,
-                w=opt.w,
-                h=opt.h,
-                image_path=img_path,
-                opacity=opt.opacity,
-            )
-
-        elif tool == "draw_signature":
-            opt = DrawSignatureOptions(**opts_raw)
-            draw_signature(
-                src,
-                dst,
-                page=opt.page,
-                x=opt.x,
-                y=opt.y,
-                w=opt.w,
-                h=opt.h,
-                strokes=opt.strokes,
-                stroke_width=opt.strokeWidth,
-                opacity=opt.opacity,
-                color=opt.color,  # ✅ pass through
-            )
-
-        else:
-            err(400, "BAD_OPTIONS", "Unknown tool")
-
-        job.versions.append({"v": new_v, "path": dst})
-        job.cursor = len(job.versions)
-        job.lastTool = tool
-        job.lastError = None
-        await save_job(r, job)
-
-        return ApplyToolResponse(
-            jobId=job.jobId,
-            status="done",
-            cursor=job.cursor,
-            versions=len(job.versions),
-            activeVersion=job.active_version,
-            downloadUrl=f"/api/pdf/download/{job.jobId}",
-            expiresAt=job.expiresAt,
-        )
-
-    except ValueError as e:
-        err(400, "BAD_OPTIONS", str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        job.status = "failed"
-        job.lastTool = tool
-        job.lastError = str(e)
-        await save_job(r, job)
-        err(500, "PROCESSING_FAILED", "PDF processing failed", {"tool": tool})
-
-
-@router.post("/undo/{job_id}", response_model=UndoRedoResponse)
-async def undo(job_id: str):
-    r = get_redis()
-    job = await load_job(r, job_id)
-
-    if job.cursor > 1:
-        job.cursor -= 1
-        await save_job(r, job)
-
-    return UndoRedoResponse(
-        jobId=job.jobId,
-        cursor=job.cursor,
-        versions=len(job.versions),
-        activeVersion=job.active_version,
-        downloadUrl=f"/api/pdf/download/{job.jobId}",
-        expiresAt=job.expiresAt,
-    )
-
-
-@router.post("/redo/{job_id}", response_model=UndoRedoResponse)
-async def redo(job_id: str):
-    r = get_redis()
-    job = await load_job(r, job_id)
-
-    if job.cursor < len(job.versions):
-        job.cursor += 1
-        await save_job(r, job)
-
-    return UndoRedoResponse(
-        jobId=job.jobId,
-        cursor=job.cursor,
-        versions=len(job.versions),
-        activeVersion=job.active_version,
-        downloadUrl=f"/api/pdf/download/{job.jobId}",
-        expiresAt=job.expiresAt,
-    )
-
-
-@router.delete("/{job_id}")
-async def delete_job(job_id: str):
-    r = get_redis()
-    raw = await r.get(job_key(job_id))
-    await r.delete(job_key(job_id))
-    safe_remove_job_folder(job_id)
-    if not raw:
-        return JSONResponse({"ok": True, "message": "Already deleted"})
-    return JSONResponse({"ok": True})
-
-
-# ----------------------------
-# PDF helpers for safe page reading
-# ----------------------------
-from pypdf.generic import NameObject
-
 
 def _safe_page_box(page):
     box = None
@@ -599,7 +136,6 @@ def _safe_page_box(page):
     except Exception:
         return 595.0, 842.0
 
-
 def _safe_pdf_num_pages(path: str) -> int:
     try:
         reader = PdfReader(path)
@@ -607,70 +143,101 @@ def _safe_pdf_num_pages(path: str) -> int:
     except Exception:
         return 0
 
+def k_doc(doc_id: str) -> str:
+    return f"pdf:doc:{doc_id}"
 
-@router.get("/preview/{job_id}/{page}")
-async def preview(
-        job_id: str,
-        page: int,
-        dpi: int = 144,
-        v: Optional[int] = Query(default=None),  # ✅ allow frontend to request specific version
-):
-    """
-    Returns PNG preview of a page.
-    If `v` is provided, renders that version (if it exists in job.versions), otherwise active.
-    dpi is clamped for sanity.
-    """
-    if dpi < 72:
-        dpi = 72
-    if dpi > 220:
-        dpi = 220
+def k_draft(doc_id: str) -> str:
+    return f"pdf:draft:{doc_id}"
 
-    r = get_redis()
-    job = await load_job(r, job_id)
+def k_result(doc_id: str) -> str:
+    return f"pdf:result:{doc_id}"
 
-    # choose version to render
-    src_pdf = job.active_path
-    ver = job.active_version
-    if v is not None:
-        # try to find matching version in job.versions
-        match = next((it for it in job.versions if int(it.get("v", -1)) == int(v)), None)
-        if match:
-            src_pdf = match["path"]
-            ver = int(match["v"])
+async def ensure_doc_exists(r: Redis, doc_id: str):
+    raw = await r.get(k_doc(doc_id))
+    if not raw:
+        raise HTTPException(404, "Document not found or expired")
 
-    if not os.path.exists(src_pdf):
-        err(404, "RESULT_MISSING", "Result file missing on server")
+# ----------------------------
+# Schemas
+# ----------------------------
+class CreateResp(BaseModel):
+    jobId: str
+    expiresAtDraft: int
 
-    total = _safe_pdf_num_pages(src_pdf)
-    if total <= 0:
-        err(500, "PDF_READ_FAILED", "Unable to read PDF")
+class DraftPutBody(BaseModel):
+    draft: Dict[str, Any]
 
-    if page < 1 or page > total:
-        err(400, "BAD_OPTIONS", "Invalid page number", {"page": page, "totalPages": total})
+class SaveBody(BaseModel):
+    overlays: Dict[int, str]  # page -> dataURL or base64
+    dpi: int = Field(default=144, ge=72, le=220)
 
-    out_png = preview_path(job_id, ver, page, dpi)
+# ----------------------------
+# Routes
+# ----------------------------
+@router.post("/create", response_model=CreateResp)
+async def create(files: List[UploadFile] = File(...)):
+    ensure_storage_root()
 
-    if os.path.exists(out_png):
-        return FileResponse(out_png, media_type="image/png")
+    if not files:
+        raise HTTPException(400, "No files uploaded")
+    if len(files) > MAX_FILES:
+        raise HTTPException(413, f"Max files is {MAX_FILES}")
 
+    doc_id = str(uuid.uuid4())
+    folder = doc_folder(doc_id)
+    os.makedirs(folder, exist_ok=True)
+
+    tmp_paths: List[str] = []
     try:
-        render_pdf_page_to_png(src_pdf, out_png, page=page, dpi=dpi)
-    except ValueError as e:
-        err(400, "BAD_OPTIONS", str(e))
-    except Exception as e:
-        err(500, "PREVIEW_FAILED", "Failed to render preview", {"error": str(e)})
+        for i, f in enumerate(files):
+            tmp = os.path.join(folder, safe_filename(f.filename, f"upload_{i}.pdf"))
+            await save_upload_validated(f, tmp, MAX_FILE_SIZE)
+            validate_pdf_signature(tmp)
+            validate_pdf_mime(tmp)
+            validate_pages_limit(tmp)
+            tmp_paths.append(tmp)
+    finally:
+        for f in files:
+            try:
+                await f.close()
+            except Exception:
+                pass
 
-    return FileResponse(out_png, media_type="image/png")
+    out_src = source_path(doc_id)
+    if len(tmp_paths) == 1:
+        shutil.copyfile(tmp_paths[0], out_src)
+    else:
+        merge_pdfs(tmp_paths, out_src)
 
+    r: Redis = get_redis()
+    expires_draft = now_ts() + DRAFT_TTL_SECONDS
+    await r.set(
+        k_doc(doc_id),
+        json.dumps({"jobId": doc_id, "expiresAtDraft": expires_draft}),
+        ex=DRAFT_TTL_SECONDS,
+    )
 
-@router.get("/page-info/{job_id}")
-async def page_info(job_id: str):
-    r = get_redis()
-    job = await load_job(r, job_id)
+    return CreateResp(jobId=doc_id, expiresAtDraft=expires_draft)
 
-    path = job.active_path
+@router.get("/download/{doc_id}")
+async def download_source(doc_id: str):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    path = source_path(doc_id)
     if not os.path.exists(path):
-        err(404, "RESULT_MISSING", "Result file missing on server")
+        raise HTTPException(404, "Source PDF not found")
+
+    return FileResponse(path, media_type="application/pdf", filename=f"pdf_{doc_id}_source.pdf")
+
+@router.get("/page-info/{doc_id}")
+async def page_info(doc_id: str):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    path = source_path(doc_id)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Source PDF not found")
 
     reader = PdfReader(path)
     pages = len(reader.pages)
@@ -679,11 +246,122 @@ async def page_info(job_id: str):
     if pages > 0:
         w, h = _safe_page_box(reader.pages[0])
 
-    return JSONResponse(
-        {
-            "pages": pages,
-            "pageW": w,
-            "pageH": h,
-            "activeVersion": job.active_version,
-        }
-    )
+    return JSONResponse({"pages": pages, "pageW": w, "pageH": h})
+
+@router.get("/preview/{doc_id}/{page}")
+async def preview(doc_id: str, page: int, dpi: int = 144):
+    # clamp dpi
+    if dpi < 72:
+        dpi = 72
+    if dpi > 220:
+        dpi = 220
+
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    src = source_path(doc_id)
+    if not os.path.exists(src):
+        raise HTTPException(404, "Source PDF not found")
+
+    total = _safe_pdf_num_pages(src)
+    if total <= 0:
+        raise HTTPException(500, "Unable to read PDF")
+
+    if page < 1 or page > total:
+        raise HTTPException(400, "Invalid page number")
+
+    os.makedirs(preview_folder(doc_id), exist_ok=True)
+    out_png = preview_path(doc_id, page, dpi)
+
+    if os.path.exists(out_png):
+        return FileResponse(out_png, media_type="image/png")
+
+    try:
+        render_pdf_page_to_png(src, out_png, page=page, dpi=dpi)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to render preview: {e}")
+
+    return FileResponse(out_png, media_type="image/png")
+
+@router.get("/draft/{doc_id}")
+async def get_draft(doc_id: str):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    raw = await r.get(k_draft(doc_id))
+    if not raw:
+        raise HTTPException(404, "Draft not found")
+    return JSONResponse({"draft": json.loads(raw)})
+
+@router.put("/draft/{doc_id}")
+async def put_draft(doc_id: str, body: DraftPutBody):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    await r.set(k_draft(doc_id), json.dumps(body.draft), ex=DRAFT_TTL_SECONDS)
+    return JSONResponse({"ok": True, "expiresAtDraft": now_ts() + DRAFT_TTL_SECONDS})
+
+@router.post("/save/{doc_id}")
+async def save(doc_id: str, body: SaveBody):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    src = source_path(doc_id)
+    if not os.path.exists(src):
+        raise HTTPException(404, "Source PDF not found (expired?)")
+
+    # decode overlays (dataURL OR raw base64)
+    overlays_bytes: Dict[int, bytes] = {}
+    for p, data in body.overlays.items():
+        if not data:
+            continue
+        if isinstance(data, str) and data.startswith("data:image"):
+            b64 = data.split(",", 1)[1]
+        else:
+            b64 = data
+        try:
+            overlays_bytes[int(p)] = base64.b64decode(b64)
+        except Exception:
+            raise HTTPException(400, f"Bad base64 for page {p}")
+
+    # apply overlays -> result.pdf
+    out = result_path(doc_id)
+    os.makedirs(doc_folder(doc_id), exist_ok=True)
+    apply_png_overlays(src, out, overlays_bytes, dpi=body.dpi)
+
+    # result TTL
+    expires_result = now_ts() + RESULT_TTL_SECONDS
+    await r.set(k_result(doc_id), json.dumps({"expiresAtResult": expires_result}), ex=RESULT_TTL_SECONDS)
+
+    # draft больше не нужен после сохранения
+    await r.delete(k_draft(doc_id))
+
+    return JSONResponse({"downloadUrl": f"/api/pdf/download-result/{doc_id}", "expiresAtResult": expires_result})
+
+@router.get("/download-result/{doc_id}")
+async def download_result(doc_id: str):
+    r: Redis = get_redis()
+
+    # результат живёт ТОЛЬКО пока есть ключ
+    raw = await r.get(k_result(doc_id))
+    if not raw:
+        # чистим папку, если TTL вышел
+        safe_remove_doc_folder(doc_id)
+        raise HTTPException(404, "Result not found or expired")
+
+    path = result_path(doc_id)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Result file missing")
+
+    return FileResponse(path, media_type="application/pdf", filename=f"pdf_{doc_id}.pdf")
+
+@router.delete("/{doc_id}")
+async def delete_doc(doc_id: str):
+    r: Redis = get_redis()
+    await r.delete(k_draft(doc_id))
+    await r.delete(k_result(doc_id))
+    await r.delete(k_doc(doc_id))
+    safe_remove_doc_folder(doc_id)
+    return JSONResponse({"ok": True})
