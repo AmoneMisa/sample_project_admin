@@ -1,11 +1,13 @@
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 
-from .routers import languages, translations, testimonials, headerMenu, users, auth, offerCards, contacts, footer, \
+from .routers import (
+    languages, translations, testimonials, headerMenu, users, auth, offerCards, contacts, footer,
     featureCards, cleanup, services, serviceCategories, pdf
+)
 from .models.models import Base
 from .db.session import engine
 from .init_admin import init_admin
@@ -16,12 +18,20 @@ from .routers.pdf import pdf_storage_cleanup_loop
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await asyncio.create_task(pdf_storage_cleanup_loop())
+
     await init_admin()
+    cleanup_task = asyncio.create_task(pdf_storage_cleanup_loop(), name="pdf_storage_cleanup_loop")
 
-    yield
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
-    await engine.dispose()
+        await engine.dispose()
 
 
 app = FastAPI(lifespan=lifespan)
