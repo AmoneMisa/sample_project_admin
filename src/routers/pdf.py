@@ -1,26 +1,24 @@
 from __future__ import annotations
 
-import os
+import base64
 import json
+import os
+import shutil
 import time
 import uuid
-import shutil
-import base64
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-
 from pypdf import PdfReader
 from pypdf.generic import NameObject
-
 from redis.asyncio import Redis
-from ..utils.redis_client import get_redis
 
-from ..processors.pdf_preview import render_pdf_page_to_png
 from ..processors.pdf_ops import merge_pdfs  # (старый мердж оставляем)
 from ..processors.pdf_ops_new import apply_png_overlays  # (новый рендер поверх)
+from ..processors.pdf_preview import render_pdf_page_to_png
+from ..utils.redis_client import get_redis
 
 try:
     import magic  # python-magic
@@ -498,6 +496,7 @@ async def delete_asset(doc_id: str, asset_id: str):
 
 
 import asyncio
+
 
 async def pdf_storage_cleanup_loop():
     while True:
