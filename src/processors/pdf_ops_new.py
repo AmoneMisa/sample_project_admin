@@ -1,18 +1,12 @@
-from __future__ import annotations
-
 import io
 from typing import Dict
-
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject
-from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from pypdf.generic import NameObject
 
 
 def _safe_page_wh(page) -> tuple[float, float]:
-    """
-    Safely read page size in PDF points. Falls back to A4-like defaults.
-    """
     box = None
     try:
         box = page.get(NameObject("/CropBox"))
@@ -23,33 +17,24 @@ def _safe_page_wh(page) -> tuple[float, float]:
             box = page.get(NameObject("/MediaBox"))
         except Exception:
             box = None
-
     if box is None:
-        return 595.0, 842.0  # ~A4 in points
-
+        return 595.0, 842.0
     try:
-        arr = list(box)
-        if len(arr) != 4:
-            return 595.0, 842.0
-        x0, y0, x1, y1 = [float(v) for v in arr]
+        x0, y0, x1, y1 = [float(v) for v in list(box)]
         w = abs(x1 - x0)
         h = abs(y1 - y0)
-        if w <= 0 or h <= 0:
-            return 595.0, 842.0
-        return w, h
+        return (w, h) if w > 0 and h > 0 else (595.0, 842.0)
     except Exception:
         return 595.0, 842.0
 
 
-def _make_overlay_pdf(page_w: float, page_h: float, png_bytes: bytes) -> bytes:
-    """
-    Creates a single-page PDF (same size as target page) with the PNG drawn full-bleed.
-    """
+def _overlay_pdf_with_png(page_w: float, page_h: float, png_bytes: bytes) -> bytes:
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(page_w, page_h))
 
-    # PNG keeps alpha; mask="auto" makes ReportLab respect transparency.
     img = ImageReader(io.BytesIO(png_bytes))
+
+    # ✅ рисуем на весь лист (в PDF-пойнтах)
     c.drawImage(img, 0, 0, width=page_w, height=page_h, mask="auto")
 
     c.showPage()
@@ -59,24 +44,15 @@ def _make_overlay_pdf(page_w: float, page_h: float, png_bytes: bytes) -> bytes:
 
 
 def apply_png_overlays(src_pdf: str, out_pdf: str, overlays: Dict[int, bytes], dpi: int = 144) -> None:
-    """
-    Applies per-page PNG overlays (1-based page numbers) over src_pdf and writes out_pdf.
-    Each overlay PNG is expected to represent the FULL page (transparent background where empty).
-    `dpi` is kept for API symmetry; overlay placement does not depend on it (only on page size).
-    """
     base = PdfReader(src_pdf)
     writer = PdfWriter()
 
     for i, page in enumerate(base.pages):
-        page_no = i + 1
-
-        png = overlays.get(page_no)
-        if png:
+        p1 = i + 1
+        if p1 in overlays:
             w, h = _safe_page_wh(page)
-            overlay_pdf = _make_overlay_pdf(w, h, png)
-            overlay_reader = PdfReader(io.BytesIO(overlay_pdf))
-
-            # merge overlay on top of original page
+            overlay_bytes = _overlay_pdf_with_png(w, h, overlays[p1])
+            overlay_reader = PdfReader(io.BytesIO(overlay_bytes))
             page.merge_page(overlay_reader.pages[0])
 
         writer.add_page(page)
