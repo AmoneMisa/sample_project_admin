@@ -27,7 +27,6 @@ try:
 except Exception:
     magic = None  # type: ignore
 
-
 router = APIRouter(prefix="/pdf", tags=["pdf"])
 
 # ----------------------------
@@ -35,12 +34,13 @@ router = APIRouter(prefix="/pdf", tags=["pdf"])
 # ----------------------------
 STORAGE_ROOT = os.getenv("PDF_STORAGE_ROOT", "/var/app/storage/pdf")
 
-DRAFT_TTL_SECONDS = int(os.getenv("PDF_DRAFT_TTL_SECONDS", "86400"))   # 24h
+DRAFT_TTL_SECONDS = int(os.getenv("PDF_DRAFT_TTL_SECONDS", "86400"))  # 24h
 RESULT_TTL_SECONDS = int(os.getenv("PDF_RESULT_TTL_SECONDS", "3600"))  # 1h
 
 MAX_FILE_SIZE = int(os.getenv("PDF_MAX_FILE_SIZE", str(50 * 1024 * 1024)))  # 50MB
 MAX_FILES = int(os.getenv("PDF_MAX_FILES", "10"))
 MAX_PAGES = int(os.getenv("PDF_MAX_PAGES", "500"))
+
 
 # ----------------------------
 # Helpers
@@ -48,27 +48,44 @@ MAX_PAGES = int(os.getenv("PDF_MAX_PAGES", "500"))
 def now_ts() -> int:
     return int(time.time())
 
+
 def ensure_storage_root():
     os.makedirs(STORAGE_ROOT, exist_ok=True)
+
 
 def doc_folder(doc_id: str) -> str:
     return os.path.join(STORAGE_ROOT, doc_id)
 
+
 def source_path(doc_id: str) -> str:
     return os.path.join(doc_folder(doc_id), "source.pdf")
+
 
 def result_path(doc_id: str) -> str:
     return os.path.join(doc_folder(doc_id), "result.pdf")
 
+
 def preview_folder(doc_id: str) -> str:
     return os.path.join(doc_folder(doc_id), "previews")
+
 
 def preview_path(doc_id: str, page: int, dpi: int) -> str:
     return os.path.join(preview_folder(doc_id), f"p{page}_dpi{dpi}.png")
 
+
 def safe_filename(name: str, fallback: str) -> str:
     base = os.path.basename(name or "").strip()
     return base if base else fallback
+
+
+def safe_remove_result_files(doc_id: str):
+    try:
+        rp = result_path(doc_id)
+        if os.path.exists(rp):
+            os.remove(rp)
+    except:
+        pass
+
 
 def safe_remove_doc_folder(doc_id: str):
     try:
@@ -76,11 +93,13 @@ def safe_remove_doc_folder(doc_id: str):
     except Exception:
         pass
 
+
 def validate_pdf_signature(path: str):
     with open(path, "rb") as f:
         head = f.read(5)
     if head != b"%PDF-":
         raise HTTPException(415, "Uploaded file is not a valid PDF (missing %PDF- header)")
+
 
 def validate_pdf_mime(path: str):
     if magic is None:
@@ -89,11 +108,13 @@ def validate_pdf_mime(path: str):
     if mime != "application/pdf":
         raise HTTPException(415, f"Only PDF allowed (detected {mime})")
 
+
 def validate_pages_limit(path: str):
     reader = PdfReader(path)
     pages = len(reader.pages)
     if pages > MAX_PAGES:
         raise HTTPException(413, f"Max pages is {MAX_PAGES}")
+
 
 async def save_upload_validated(upload: UploadFile, dest_path: str, max_size: int) -> int:
     written = 0
@@ -107,6 +128,7 @@ async def save_upload_validated(upload: UploadFile, dest_path: str, max_size: in
                 raise HTTPException(413, f"Max file size is {max_size} bytes")
             out.write(chunk)
     return written
+
 
 def _safe_page_box(page):
     box = None
@@ -136,6 +158,7 @@ def _safe_page_box(page):
     except Exception:
         return 595.0, 842.0
 
+
 def _safe_pdf_num_pages(path: str) -> int:
     try:
         reader = PdfReader(path)
@@ -143,33 +166,41 @@ def _safe_pdf_num_pages(path: str) -> int:
     except Exception:
         return 0
 
+
 def k_doc(doc_id: str) -> str:
     return f"pdf:doc:{doc_id}"
+
 
 def k_draft(doc_id: str) -> str:
     return f"pdf:draft:{doc_id}"
 
+
 def k_result(doc_id: str) -> str:
     return f"pdf:result:{doc_id}"
+
 
 async def ensure_doc_exists(r: Redis, doc_id: str):
     raw = await r.get(k_doc(doc_id))
     if not raw:
         raise HTTPException(404, "Document not found or expired")
 
+
 # ----------------------------
 # Schemas
 # ----------------------------
 class CreateResp(BaseModel):
-    jobId: str
+    docId: str
     expiresAtDraft: int
+
 
 class DraftPutBody(BaseModel):
     draft: Dict[str, Any]
 
+
 class SaveBody(BaseModel):
     overlays: Dict[int, str]  # page -> dataURL or base64
     dpi: int = Field(default=144, ge=72, le=220)
+
 
 # ----------------------------
 # Routes
@@ -213,11 +244,12 @@ async def create(files: List[UploadFile] = File(...)):
     expires_draft = now_ts() + DRAFT_TTL_SECONDS
     await r.set(
         k_doc(doc_id),
-        json.dumps({"jobId": doc_id, "expiresAtDraft": expires_draft}),
+        json.dumps({"docId": doc_id, "expiresAtDraft": expires_draft}),
         ex=DRAFT_TTL_SECONDS,
     )
 
-    return CreateResp(jobId=doc_id, expiresAtDraft=expires_draft)
+    return CreateResp(docId=doc_id, expiresAtDraft=expires_draft)
+
 
 @router.get("/download/{doc_id}")
 async def download_source(doc_id: str):
@@ -229,6 +261,7 @@ async def download_source(doc_id: str):
         raise HTTPException(404, "Source PDF not found")
 
     return FileResponse(path, media_type="application/pdf", filename=f"pdf_{doc_id}_source.pdf")
+
 
 @router.get("/page-info/{doc_id}")
 async def page_info(doc_id: str):
@@ -247,6 +280,7 @@ async def page_info(doc_id: str):
         w, h = _safe_page_box(reader.pages[0])
 
     return JSONResponse({"pages": pages, "pageW": w, "pageH": h})
+
 
 @router.get("/preview/{doc_id}/{page}")
 async def preview(doc_id: str, page: int, dpi: int = 144):
@@ -285,6 +319,7 @@ async def preview(doc_id: str, page: int, dpi: int = 144):
 
     return FileResponse(out_png, media_type="image/png")
 
+
 @router.get("/draft/{doc_id}")
 async def get_draft(doc_id: str):
     r: Redis = get_redis()
@@ -295,6 +330,7 @@ async def get_draft(doc_id: str):
         raise HTTPException(404, "Draft not found")
     return JSONResponse({"draft": json.loads(raw)})
 
+
 @router.put("/draft/{doc_id}")
 async def put_draft(doc_id: str, body: DraftPutBody):
     r: Redis = get_redis()
@@ -302,6 +338,7 @@ async def put_draft(doc_id: str, body: DraftPutBody):
 
     await r.set(k_draft(doc_id), json.dumps(body.draft), ex=DRAFT_TTL_SECONDS)
     return JSONResponse({"ok": True, "expiresAtDraft": now_ts() + DRAFT_TTL_SECONDS})
+
 
 @router.post("/save/{doc_id}")
 async def save(doc_id: str, body: SaveBody):
@@ -340,15 +377,15 @@ async def save(doc_id: str, body: SaveBody):
 
     return JSONResponse({"downloadUrl": f"/api/pdf/download-result/{doc_id}", "expiresAtResult": expires_result})
 
+
 @router.get("/download-result/{doc_id}")
 async def download_result(doc_id: str):
     r: Redis = get_redis()
 
-    # результат живёт ТОЛЬКО пока есть ключ
     raw = await r.get(k_result(doc_id))
     if not raw:
-        # чистим папку, если TTL вышел
-        safe_remove_doc_folder(doc_id)
+        # result истёк → удаляем ТОЛЬКО result.pdf
+        safe_remove_result_files(doc_id)
         raise HTTPException(404, "Result not found or expired")
 
     path = result_path(doc_id)
@@ -356,6 +393,7 @@ async def download_result(doc_id: str):
         raise HTTPException(404, "Result file missing")
 
     return FileResponse(path, media_type="application/pdf", filename=f"pdf_{doc_id}.pdf")
+
 
 @router.delete("/{doc_id}")
 async def delete_doc(doc_id: str):
