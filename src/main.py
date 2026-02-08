@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routers import (
     languages, translations, testimonials, headerMenu, users, auth, offerCards, contacts, footer,
-    featureCards, cleanup, services, serviceCategories, pdf
+    featureCards, cleanup, services, serviceCategories, pdf, convert
 )
 from .models.models import Base
 from .db.session import engine
@@ -65,3 +65,4 @@ app.include_router(cleanup.router)
 app.include_router(services.router)
 app.include_router(serviceCategories.router)
 app.include_router(pdf.router)
+app.include_router(convert.router)
