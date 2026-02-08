@@ -403,3 +403,118 @@ async def delete_doc(doc_id: str):
     await r.delete(k_doc(doc_id))
     safe_remove_doc_folder(doc_id)
     return JSONResponse({"ok": True})
+
+
+MAX_IMAGE_SIZE = int(os.getenv("PDF_MAX_IMAGE_SIZE", str(5 * 1024 * 1024)))  # 5MB
+ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp"}
+
+
+def assets_folder(doc_id: str) -> str:
+    return os.path.join(doc_folder(doc_id), "assets")
+
+
+def asset_path(doc_id: str, asset_id: str, ext: str) -> str:
+    return os.path.join(assets_folder(doc_id), f"{asset_id}.{ext}")
+
+
+def _ext_from_mime(mime: str) -> str:
+    if mime == "image/png":
+        return "png"
+    if mime == "image/jpeg":
+        return "jpg"
+    if mime == "image/webp":
+        return "webp"
+    return "bin"
+
+
+@router.post("/assets/{doc_id}")
+async def upload_asset(doc_id: str, file: UploadFile = File(...)):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    if not file:
+        raise HTTPException(400, "No file")
+
+    # validate mime (best-effort)
+    ct = (file.content_type or "").lower().strip()
+    if ct and ct not in ALLOWED_IMAGE_MIME:
+        raise HTTPException(415, f"Unsupported image type: {ct}")
+
+    os.makedirs(assets_folder(doc_id), exist_ok=True)
+
+    asset_id = uuid.uuid4().hex
+    ext = _ext_from_mime(ct) if ct else "png"
+    path = asset_path(doc_id, asset_id, ext)
+
+    try:
+        await save_upload_validated(file, path, MAX_IMAGE_SIZE)
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+    return JSONResponse(
+        {
+            "assetId": asset_id,
+            "url": f"/api/pdf/assets/{doc_id}/{asset_id}",
+        }
+    )
+
+
+@router.get("/assets/{doc_id}/{asset_id}")
+async def get_asset(doc_id: str, asset_id: str):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    folder = assets_folder(doc_id)
+    if not os.path.isdir(folder):
+        raise HTTPException(404, "Asset not found")
+
+    # asset could be png/jpg/webp — найдём по префиксу
+    for ext, mt in (("png", "image/png"), ("jpg", "image/jpeg"), ("webp", "image/webp")):
+        p = asset_path(doc_id, asset_id, ext)
+        if os.path.exists(p):
+            return FileResponse(p, media_type=mt)
+
+    raise HTTPException(404, "Asset not found")
+
+
+@router.delete("/assets/{doc_id}/{asset_id}")
+async def delete_asset(doc_id: str, asset_id: str):
+    r: Redis = get_redis()
+    await ensure_doc_exists(r, doc_id)
+
+    for ext in ("png", "jpg", "webp"):
+        p = asset_path(doc_id, asset_id, ext)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+            return JSONResponse({"ok": True})
+
+    return JSONResponse({"ok": True})
+
+
+import asyncio
+
+async def pdf_storage_cleanup_loop():
+    while True:
+        try:
+            r: Redis = get_redis()
+            if os.path.isdir(STORAGE_ROOT):
+                for doc_id in os.listdir(STORAGE_ROOT):
+                    folder = doc_folder(doc_id)
+                    if not os.path.isdir(folder):
+                        continue
+                    try:
+                        exists = await r.exists(k_doc(doc_id))
+                    except Exception:
+                        exists = 1  # если Redis временно недоступен — не удаляем
+                    if not exists:
+                        safe_remove_doc_folder(doc_id)
+        except Exception:
+            pass
+
+        await asyncio.sleep(30 * 60)  # 30 minutes

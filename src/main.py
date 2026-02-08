@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -7,13 +9,14 @@ from .routers import languages, translations, testimonials, headerMenu, users, a
 from .models.models import Base
 from .db.session import engine
 from .init_admin import init_admin
+from .routers.pdf import pdf_storage_cleanup_loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
+        await asyncio.create_task(pdf_storage_cleanup_loop())
     await init_admin()
 
     yield
