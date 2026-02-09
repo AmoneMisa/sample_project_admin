@@ -5,12 +5,71 @@ import httpx
 import re
 import json
 from ..utils.redis_client import get_redis
+import asyncio
 
 router = APIRouter(prefix="/dockerhub", tags=["DockerHub"])
 
 DOCKERHUB_BASE = "https://hub.docker.com"
 REGISTRY_BASE = "https://registry-1.docker.io"
 AUTH_BASE = "https://auth.docker.io"
+
+SIMPLE_RE = re.compile(
+    r"^(?:(?P<major>\d+)(?:\.\d+\.\d+)?)?-?(?P<q>[a-z0-9]+)(?P<tail>.*)?$",
+    re.IGNORECASE
+)
+
+
+def make_base_tag(tag: str, q: str) -> Optional[str]:
+    # хотим только те, где q является "основной частью" варианта (alpine, slim, bullseye и т.п.)
+    # Поддержка:
+    #  alpine
+    #  17-alpine
+    #  17.0.18-alpine3.23
+    #  17-alpine3.23
+    #  17-alpine-jdk (если захотите — можно расширить правила)
+    t = tag.lower()
+    q = q.lower()
+
+    # строго "alpine" как отдельный вариант:
+    # - либо ровно alpine
+    # - либо начинается с "<major>" или "<major>.<minor>.<patch>" и дальше "-alpine..."
+    if t == q:
+        return q
+
+    m = re.match(rf"^(?P<major>\d+)(?:\.\d+\.\d+)?-(?P<rest>.+)$", t)
+    if not m:
+        return None
+
+    major = m.group("major")
+    rest = m.group("rest")
+
+    # rest должен начинаться с q (alpine...)
+    if not rest.startswith(q):
+        return None
+
+    # базовый = "<major>-<q>"
+    return f"{major}-{q}"
+
+
+def pick_best_for_base(base: str, tags: List[str]) -> str:
+    # 1) если base реально есть — берём его
+    if base in tags:
+        return base
+
+    # 2) иначе ищем самый "общий": без patch и без version-хвоста после q
+    #    пример: предпочтём 17-alpine над 17.0.18-alpine3.23
+    def score(t: str):
+        p = parse_tag(t)  # у тебя уже есть parse_tag выше
+        spec = 0
+        if p:
+            spec += 1 if p["minor"] is not None else 0
+            spec += 1 if p["patch"] is not None else 0
+            spec += 1 if p["variant_ver"] is not None else 0
+        else:
+            spec = 10
+        return (spec, t)
+
+    return sorted(tags, key=score)[0]
 
 
 # -----------------------------
@@ -46,6 +105,12 @@ class AliasesResponse(BaseModel):
     digest: Optional[str] = None
     aliases: List[str] = []
     reason: str
+
+
+class SimpleSearchItem(BaseModel):
+    base: str  # например "17-alpine" или "alpine"
+    tag: str  # реально существующий "основной" тег (лучший)
+    examples: List[str] = []
 
 
 # -----------------------------
@@ -223,6 +288,32 @@ async def resolve_tag(
     )
 
 
+async def registry_digest_map_for_tags(repo: str, tags: List[str], token: str, concurrency: int = 10) -> Dict[
+    str, List[str]]:
+    sem = asyncio.Semaphore(concurrency)
+    digest_to_tags: Dict[str, List[str]] = {}
+
+    async def one(t: str):
+        async with sem:
+            d = await registry_get_manifest_digest(repo, t, token)
+            return t, d
+
+    results = await asyncio.gather(*(one(t) for t in tags), return_exceptions=True)
+
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        t, d = r
+        if d:
+            digest_to_tags.setdefault(d, []).append(t)
+
+    # нормализуем
+    for d in list(digest_to_tags.keys()):
+        digest_to_tags[d] = sorted(set(digest_to_tags[d]))
+
+    return digest_to_tags
+
+
 @router.get("/tags/aliases", response_model=AliasesResponse)
 async def tag_aliases(
         repo: str,
@@ -251,20 +342,76 @@ async def tag_aliases(
     aliases = await rget_json(redis, aliases_key)
 
     if aliases is None:
-        # быстрый режим: пытаемся собрать aliases из DockerHub tags API (images[].digest)
         p = parse_tag(tag)
         name_filter = str(p["major"]) if p else None
 
         raw = await dockerhub_list_tags(repo, name_filter=name_filter, page_size=100)
-        digest_to_tags: Dict[str, List[str]] = {}
-        for t in raw:
-            tname = t.get("name")
-            for img in t.get("images", []) or []:
-                d = img.get("digest")
-                if d and tname:
-                    digest_to_tags.setdefault(d, []).append(tname)
+        tag_names = [t.get("name") for t in raw if t.get("name")]
+
+        # токен
+        token_key = f"dockerhub:registry_token:{repo}"
+        token = await rget_json(redis, token_key)
+        if token is None:
+            token = await registry_get_token(repo)
+            await rset_json(redis, token_key, token, ttl=1800)
+
+        digest_map_key = f"dockerhub:digest_map:{repo}:filter={name_filter or 'all'}"
+        digest_to_tags = await rget_json(redis, digest_map_key)
+
+        if digest_to_tags is None:
+            digest_to_tags = await registry_digest_map_for_tags(repo, tag_names, token, concurrency=10)
+            await rset_json(redis, digest_map_key, digest_to_tags, ttl=1800)  # 30 мин
 
         aliases = sorted(set(digest_to_tags.get(digest, [])))
         await rset_json(redis, aliases_key, aliases, ttl=1800)
 
     return AliasesResponse(repo=repo, tag=tag, digest=digest, aliases=aliases, reason="ok")
+
+
+@router.get("/tags/search", response_model=List[SimpleSearchItem])
+async def simple_search_tags(
+        repo: str,
+        q: str,
+        redis=Depends(get_redis),
+):
+    q = (q or "").strip().lower()
+    if not q:
+        return []
+
+    # кешируем список тегов по q
+    cache_key = f"dockerhub:simple_search:{repo}:q={q}"
+    cached = await rget_json(redis, cache_key)
+    if cached is None:
+        raw = await dockerhub_list_tags(repo, name_filter=q, page_size=100)
+        names = [t.get("name") for t in raw if t.get("name")]
+        await rset_json(redis, cache_key, names, ttl=600)  # 10 минут
+    else:
+        names = cached
+
+    # группировка в base
+    groups: Dict[str, List[str]] = {}
+    for name in names:
+        base = make_base_tag(name, q)
+        if not base:
+            continue
+        groups.setdefault(base, []).append(name)
+
+    out: List[SimpleSearchItem] = []
+    for base, tags in groups.items():
+        tags_unique = sorted(set(tags))
+        best = pick_best_for_base(base, tags_unique)
+        out.append(SimpleSearchItem(
+            base=base,
+            tag=best,
+            examples=tags_unique[:6]
+        ))
+
+    # сортировка: "alpine" первым, потом по major
+    def sort_key(item: SimpleSearchItem):
+        if item.base == q:
+            return (-1, 0, item.base)
+        m = re.match(r"^(\d+)-", item.base)
+        return (0, int(m.group(1)) if m else 10 ** 9, item.base)
+
+    out.sort(key=sort_key)
+    return out
