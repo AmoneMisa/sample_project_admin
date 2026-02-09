@@ -241,7 +241,7 @@ class OfferCard(Base):
 class FooterMenuBlock(Base):
     __tablename__ = "FooterMenuBlock"
 
-    id = Column(String, primary_key=True)  # клиент присылает uuid
+    id = Column(String(36), primary_key=True)
     titleKey = Column(String(255), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
@@ -250,17 +250,18 @@ class FooterMenuBlock(Base):
         "FooterMenuLink",
         back_populates="block",
         cascade="all, delete-orphan",
-        order_by="FooterMenuLink.order.asc()"
+        order_by="FooterMenuLink.order.asc()",
     )
 
 class FooterMenuLink(Base):
     __tablename__ = "FooterMenuLink"
 
-    id = Column(String, primary_key=True)  # клиент присылает uuid
-    blockId = Column(String, ForeignKey("FooterMenuBlock.id"), nullable=False)
+    id = Column(String(36), primary_key=True)
+    blockId = Column(String(36), ForeignKey("FooterMenuBlock.id"), nullable=False)
 
     labelKey = Column(String(255), nullable=False)
     href = Column(String(500), nullable=False)
+
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
