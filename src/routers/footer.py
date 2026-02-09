@@ -1,23 +1,22 @@
-import uuid
-from typing import Optional, List
-
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import require_editor
-from ..models.models import FooterBlock, FooterItem
+from ..models.models import FooterMenuBlock, FooterMenuLink
 from ..utils.redis_client import get_redis
 
 
-router = APIRouter(prefix="/footer", tags=["Footer"])
+router = APIRouter(prefix="/footer/menu", tags=["FooterMenu"])
 
 
-# ---------------------------------------------------------
-# Unified API error helper
-# ---------------------------------------------------------
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
 def api_error(code: str, message: str, status: int = 400, field: str | None = None):
     detail = {"code": code, "message": message}
     if field:
@@ -25,258 +24,194 @@ def api_error(code: str, message: str, status: int = 400, field: str | None = No
     raise HTTPException(status_code=status, detail=detail)
 
 
-# ---------------------------------------------------------
+# -------------------------------------------------
 # Schemas
-# ---------------------------------------------------------
-class FooterItemBase(BaseModel):
-    type: str = Field(..., min_length=1)
-    labelKey: Optional[str] = None
-    href: Optional[str] = None
-    image: Optional[str] = None
-    value: Optional[str] = None
-    icon: Optional[str] = None
+# -------------------------------------------------
+class MenuLinkDTO(BaseModel):
+    id: str = Field(..., min_length=1)
+    labelKey: str = Field(..., min_length=1)
+    href: str = Field(..., min_length=1)
     order: int = 0
     isVisible: bool = True
 
 
-class FooterItemCreate(FooterItemBase):
-    pass
-
-
-class FooterItemUpdate(BaseModel):
-    type: Optional[str] = Field(None, min_length=1)
-    labelKey: Optional[str] = None
-    href: Optional[str] = None
-    image: Optional[str] = None
-    value: Optional[str] = None
-    icon: Optional[str] = None
-    order: Optional[int] = None
-    isVisible: Optional[bool] = None
-
-
-class FooterBlockBase(BaseModel):
-    type: str = Field(..., min_length=1)
-    titleKey: Optional[str] = None
-    descriptionKey: Optional[str] = None
-    allowedDomains: Optional[List[str]] = None
+class MenuBlockDTO(BaseModel):
+    id: str = Field(..., min_length=1)
+    titleKey: str = Field(..., min_length=1)
     order: int = 0
     isVisible: bool = True
+    links: List[MenuLinkDTO] = []
 
 
-class FooterBlockCreate(FooterBlockBase):
-    pass
+class BlocksPayload(BaseModel):
+    blocks: List[MenuBlockDTO]
 
 
-class FooterBlockUpdate(BaseModel):
-    titleKey: Optional[str] = None
-    descriptionKey: Optional[str] = None
-    allowedDomains: Optional[List[str]] = None
-    order: Optional[int] = None
-    isVisible: Optional[bool] = None
+class DeletePayload(BaseModel):
+    ids: List[str]
 
 
-# ---------------------------------------------------------
-# LIST BLOCKS
-# ---------------------------------------------------------
-@router.get("")
-async def list_footer(
+# -------------------------------------------------
+# GET
+# -------------------------------------------------
+@router.get("/blocks")
+async def list_blocks(
         all: bool = False,
-        session: AsyncSession = Depends(get_session)
+        session: AsyncSession = Depends(get_session),
 ):
-    query = select(FooterBlock).order_by(FooterBlock.order.asc(), FooterBlock.id.asc())
+    q = (
+        select(FooterMenuBlock)
+        .options(selectinload(FooterMenuBlock.links))
+        .order_by(FooterMenuBlock.order.asc(), FooterMenuBlock.id.asc())
+    )
 
     if not all:
-        query = query.where(FooterBlock.isVisible == True)
+        q = q.where(FooterMenuBlock.isVisible == True)
 
-    rows = await session.execute(query)
+    rows = await session.execute(q)
     return rows.scalars().all()
 
 
-# ---------------------------------------------------------
-# CREATE BLOCK
-# ---------------------------------------------------------
-@router.post("")
-async def create_footer_block(
-        payload: FooterBlockCreate,
+# -------------------------------------------------
+# POST (create many)
+# -------------------------------------------------
+@router.post("/blocks")
+async def create_blocks(
+        payload: BlocksPayload,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    if not payload.type.strip():
-        api_error("INVALID_TYPE", "Поле type не может быть пустым", field="type", status=422)
+    seen_ids = set()
 
-    block = FooterBlock(
-        id=str(uuid.uuid4()),
-        **payload.dict()
-    )
+    for b in payload.blocks:
+        if b.id in seen_ids:
+            api_error("DUPLICATE_ID", f"Duplicate id: {b.id}", 422)
 
-    session.add(block)
-    await session.commit()
-    await session.refresh(block)
+        seen_ids.add(b.id)
 
-    redis = get_redis()
-    await redis.delete("footer")
+        block = FooterMenuBlock(
+            id=b.id,
+            titleKey=b.titleKey,
+            order=b.order,
+            isVisible=b.isVisible,
+        )
 
-    return {"status": "created", "block": block}
-
-
-# ---------------------------------------------------------
-# UPDATE BLOCK
-# ---------------------------------------------------------
-@router.patch("/{id}")
-async def update_footer_block(
-        id: str,
-        payload: FooterBlockUpdate,
-        session: AsyncSession = Depends(get_session),
-        user=Depends(require_editor),
-):
-    block = await session.get(FooterBlock, id)
-    if not block:
-        api_error("BLOCK_NOT_FOUND", "Footer block не найден", status=404)
-
-    if payload.titleKey is not None and payload.titleKey.strip() == "":
-        api_error("INVALID_TITLE_KEY", "titleKey не может быть пустым", field="titleKey", status=422)
-
-    if payload.descriptionKey is not None and payload.descriptionKey.strip() == "":
-        api_error("INVALID_DESCRIPTION_KEY", "descriptionKey не может быть пустым", field="descriptionKey", status=422)
-
-    for k, v in payload.dict(exclude_unset=True).items():
-        setattr(block, k, v)
-
-    # Only one visible block of certain types
-    if payload.isVisible is True:
-        if block.type in ("contacts", "logos", "newsletter"):
-            await session.execute(
-                update(FooterBlock)
-                .where(FooterBlock.type == block.type, FooterBlock.id != block.id)
-                .values(isVisible=False)
+        block.links = [
+            FooterMenuLink(
+                id=l.id,
+                blockId=b.id,
+                labelKey=l.labelKey,
+                href=l.href,
+                order=l.order,
+                isVisible=l.isVisible,
             )
+            for l in b.links
+        ]
 
-    await session.commit()
-    await session.refresh(block)
+        session.add(block)
 
-    redis = get_redis()
-    await redis.delete("footer")
-
-    return {"status": "updated", "block": block}
-
-
-# ---------------------------------------------------------
-# DELETE BLOCK
-# ---------------------------------------------------------
-@router.delete("/{id}")
-async def delete_footer_block(
-        id: str,
-        session: AsyncSession = Depends(get_session),
-        user=Depends(require_editor),
-):
-    block = await session.get(FooterBlock, id)
-    if not block:
-        api_error("BLOCK_NOT_FOUND", "Footer block не найден", status=404)
-
-    await session.delete(block)
     await session.commit()
 
     redis = get_redis()
     await redis.delete("footer")
 
-    return {"status": "deleted"}
+    return {"status": "created", "count": len(payload.blocks)}
 
 
-# ---------------------------------------------------------
-# CREATE ITEM
-# ---------------------------------------------------------
-@router.post("/{blockId}/items")
-async def create_footer_item(
-        blockId: str,
-        payload: FooterItemCreate,
+# -------------------------------------------------
+# PATCH (update many)
+# -------------------------------------------------
+@router.patch("/blocks")
+async def update_blocks(
+        payload: BlocksPayload,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    block = await session.get(FooterBlock, blockId)
-    if not block:
-        api_error("BLOCK_NOT_FOUND", "Footer block не найден", status=404)
+    ids = [b.id for b in payload.blocks]
 
-    if not payload.type.strip():
-        api_error("INVALID_TYPE", "Поле type не может быть пустым", field="type", status=422)
-
-    item = FooterItem(
-        id=str(uuid.uuid4()),
-        blockId=blockId,
-        **payload.dict()
+    rows = await session.execute(
+        select(FooterMenuBlock)
+        .where(FooterMenuBlock.id.in_(ids))
+        .options(selectinload(FooterMenuBlock.links))
     )
 
-    session.add(item)
+    blocks_map = {b.id: b for b in rows.scalars().all()}
+
+    for dto in payload.blocks:
+        block = blocks_map.get(dto.id)
+
+        if not block:
+            api_error("BLOCK_NOT_FOUND", f"Not found: {dto.id}", 404)
+
+        # block fields
+        block.titleKey = dto.titleKey
+        block.order = dto.order
+        block.isVisible = dto.isVisible
+
+        # links
+        existing = {l.id: l for l in block.links}
+        incoming_ids = set()
+
+        for l in dto.links:
+            incoming_ids.add(l.id)
+
+            cur = existing.get(l.id)
+
+            if cur:
+                cur.labelKey = l.labelKey
+                cur.href = l.href
+                cur.order = l.order
+                cur.isVisible = l.isVisible
+            else:
+                block.links.append(
+                    FooterMenuLink(
+                        id=l.id,
+                        blockId=block.id,
+                        labelKey=l.labelKey,
+                        href=l.href,
+                        order=l.order,
+                        isVisible=l.isVisible,
+                    )
+                )
+
+        # remove deleted links
+        block.links = [l for l in block.links if l.id in incoming_ids]
+
     await session.commit()
-    await session.refresh(item)
 
     redis = get_redis()
     await redis.delete("footer")
 
-    return {"status": "created", "item": item}
+    return {"status": "updated", "count": len(payload.blocks)}
 
 
-# ---------------------------------------------------------
-# UPDATE ITEM
-# ---------------------------------------------------------
-@router.patch("/items/{id}")
-async def update_footer_item(
-        id: str,
-        payload: FooterItemUpdate,
+# -------------------------------------------------
+# DELETE (delete many)
+# -------------------------------------------------
+@router.delete("/blocks")
+async def delete_blocks(
+        payload: DeletePayload,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
-):
-    item = await session.get(FooterItem, id)
-    if not item:
-        api_error("ITEM_NOT_FOUND", "Footer item не найден", status=404)
-
-    if payload.type is not None and payload.type.strip() == "":
-        api_error("INVALID_TYPE", "Поле type не может быть пустым", field="type", status=422)
-
-    for k, v in payload.dict(exclude_unset=True).items():
-        setattr(item, k, v)
-
-    await session.commit()
-    await session.refresh(item)
-
-    redis = get_redis()
-    await redis.delete("footer")
-
-    return {"status": "updated", "item": item}
-
-
-# ---------------------------------------------------------
-# DELETE ITEM
-# ---------------------------------------------------------
-@router.delete("/items/{id}")
-async def delete_footer_item(
-        id: str,
-        session: AsyncSession = Depends(get_session),
-        user=Depends(require_editor),
-):
-    item = await session.get(FooterItem, id)
-    if not item:
-        api_error("ITEM_NOT_FOUND", "Footer item не найден", status=404)
-
-    await session.delete(item)
-    await session.commit()
-
-    redis = get_redis()
-    await redis.delete("footer")
-
-    return {"status": "deleted"}
-
-
-# ---------------------------------------------------------
-# LIST ITEMS
-# ---------------------------------------------------------
-@router.get("/{blockId}/items")
-async def list_footer_items(
-        blockId: str,
-        session: AsyncSession = Depends(get_session)
 ):
     rows = await session.execute(
-        select(FooterItem)
-        .where(FooterItem.blockId == blockId)
-        .order_by(FooterItem.order.asc())
+        select(FooterMenuBlock).where(FooterMenuBlock.id.in_(payload.ids))
     )
-    return rows.scalars().all()
+
+    blocks = rows.scalars().all()
+
+    found = {b.id for b in blocks}
+    missing = [i for i in payload.ids if i not in found]
+
+    if missing:
+        api_error("BLOCK_NOT_FOUND", f"Missing: {', '.join(missing)}", 404)
+
+    for b in blocks:
+        await session.delete(b)
+
+    await session.commit()
+
+    redis = get_redis()
+    await redis.delete("footer")
+
+    return {"status": "deleted", "count": len(payload.ids)}

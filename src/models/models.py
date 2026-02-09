@@ -238,38 +238,33 @@ class OfferCard(Base):
 # -------------------------
 # Footer Block
 # -------------------------
-class FooterBlock(Base):
-    __tablename__ = "FooterBlock"
+class FooterMenuBlock(Base):
+    __tablename__ = "FooterMenuBlock"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    type = Column(String(50), nullable=False)
-    titleKey = Column(String(255), nullable=True)
+    id = Column(String, primary_key=True)  # клиент присылает uuid
+    titleKey = Column(String(255), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
-    allowedDomains = Column(JSON, nullable=True)
-    descriptionKey = Column(String(255), nullable=True)
+    links = relationship(
+        "FooterMenuLink",
+        back_populates="block",
+        cascade="all, delete-orphan",
+        order_by="FooterMenuLink.order.asc()"
+    )
 
-    items = relationship("FooterItem", back_populates="block", cascade="all, delete")
+class FooterMenuLink(Base):
+    __tablename__ = "FooterMenuLink"
 
+    id = Column(String, primary_key=True)  # клиент присылает uuid
+    blockId = Column(String, ForeignKey("FooterMenuBlock.id"), nullable=False)
 
-class FooterItem(Base):
-    __tablename__ = "FooterItem"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    blockId = Column(String, ForeignKey("FooterBlock.id"), nullable=False)
-
-    type = Column(String(50), nullable=False)
-    labelKey = Column(String(255), nullable=True)
-    href = Column(String(500), nullable=True)
-    image = Column(String(500), nullable=True)
-    value = Column(String(500), nullable=True)
-    icon = Column(String(100), nullable=True)
-
+    labelKey = Column(String(255), nullable=False)
+    href = Column(String(500), nullable=False)
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
-    block = relationship("FooterBlock", back_populates="items")
+    block = relationship("FooterMenuBlock", back_populates="links")
 
 
 class FeatureCard(Base):
@@ -281,6 +276,7 @@ class FeatureCard(Base):
     order = Column(Integer, default=0)
     isVisible = Column(Boolean, default=True)
 
+
 class ServiceCategory(Base):
     __tablename__ = "ServiceCategories"
     id = Column(CHAR(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -290,6 +286,7 @@ class ServiceCategory(Base):
     isVisible = Column(Boolean, default=True)
     createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
     services = relationship("Service", back_populates="categoryRel")
+
 
 class Service(Base):
     __tablename__ = "services"
