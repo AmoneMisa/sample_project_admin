@@ -10,7 +10,6 @@ from ..deps.require_user import require_editor
 from ..models.models import FooterMenuBlock, FooterMenuLink
 from ..utils.redis_client import get_redis
 
-
 router = APIRouter(prefix="/footer/menu", tags=["FooterMenu"])
 
 

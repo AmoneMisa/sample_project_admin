@@ -253,6 +253,7 @@ class FooterMenuBlock(Base):
         order_by="FooterMenuLink.order.asc()",
     )
 
+
 class FooterMenuLink(Base):
     __tablename__ = "FooterMenuLink"
 
@@ -306,3 +307,66 @@ class Service(Base):
     isVisible = Column(Boolean, default=True)
     createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
     categoryRel = relationship("ServiceCategory", back_populates="services")
+
+
+class TabsWithBackground(Base):
+    __tablename__ = "TabsWithBackground"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    labelKey = Column(String(255), nullable=False)
+    icon = Column(String(255), nullable=True)
+
+    titleKey = Column(String(255), nullable=False)
+    textKey = Column(String(255), nullable=False)
+
+    buttonTextKey = Column(String(255), nullable=True)  # ✅ НОВОЕ
+
+    image = Column(String(500), nullable=True)
+
+    order = Column(Integer, default=0, nullable=False)
+    isVisible = Column(Boolean, default=True, nullable=False)
+
+    createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
+    updatedAt = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+    features = relationship(
+        "TabsWithBackgroundFeature",
+        back_populates="tab",
+        cascade="all, delete-orphan",
+        order_by="TabsWithBackgroundFeature.order.asc()",
+    )
+
+
+class TabsWithBackgroundFeature(Base):
+    __tablename__ = "TabsWithBackgroundFeature"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tabId = Column(String(36), ForeignKey("TabsWithBackground.id", ondelete="CASCADE"), nullable=False)
+
+    textKey = Column(String(255), nullable=False)
+
+    order = Column(Integer, default=0, nullable=False)
+    isVisible = Column(Boolean, default=True, nullable=False)
+
+    tab = relationship("TabsWithBackground", back_populates="features")
+
+
+class TabsUnderbutton(Base):
+    __tablename__ = "TabsUnderbutton"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    labelKey = Column(String(255), nullable=False)
+    titleKey = Column(String(255), nullable=False)
+    descriptionKey = Column(String(255), nullable=False)
+    headlineKey = Column(String(255), nullable=True)
+
+    image = Column(String(500), nullable=True)
+    buttonTextKey = Column(String(255), nullable=True)
+
+    order = Column(Integer, default=0, nullable=False)
+    isVisible = Column(Boolean, default=True, nullable=False)
+
+    createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
+    updatedAt = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
