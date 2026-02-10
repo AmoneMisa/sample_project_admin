@@ -137,9 +137,9 @@ class ChangeHistory(Base):
 class Testimonial(Base):
     __tablename__ = "Testimonial"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    name = Column(String(255), nullable=False)
-    role = Column(String(255), nullable=False)
-    quote = Column(String(2000), nullable=False)
+    nameKey = Column(String(255), nullable=False)
+    roleKey = Column(String(255), nullable=False)
+    quoteKey = Column(String(2000), nullable=False)
     avatar = Column(String(500), nullable=True)
     logo = Column(String(500), nullable=True)
     rating = Column(Integer, nullable=False)

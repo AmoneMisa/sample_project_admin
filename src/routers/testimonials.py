@@ -9,7 +9,6 @@ from ..deps.require_user import require_permission
 from ..models.models import Testimonial
 from ..utils.redis_client import get_redis
 
-
 router = APIRouter(prefix="/testimonials", tags=["Testimonials"])
 
 
@@ -27,9 +26,9 @@ def api_error(code: str, message: str, status: int = 400, field: str | None = No
 # Schemas
 # ---------------------------------------------------------
 class TestimonialCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    role: str = Field(..., min_length=1)
-    quote: str = Field(..., min_length=1)
+    nameKey: str = Field(..., min_length=1)
+    roleKey: str = Field(..., min_length=1)
+    quoteKey: str = Field(..., min_length=1)
     avatar: Optional[str] = None
     logo: Optional[str] = None
     rating: int = Field(default=5, ge=1, le=5)
@@ -38,9 +37,9 @@ class TestimonialCreate(BaseModel):
 
 
 class TestimonialUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1)
-    role: Optional[str] = Field(None, min_length=1)
-    quote: Optional[str] = Field(None, min_length=1)
+    nameKey: Optional[str] = Field(None, min_length=1)
+    roleKey: Optional[str] = Field(None, min_length=1)
+    quoteKey: Optional[str] = Field(None, min_length=1)
     avatar: Optional[str] = None
     logo: Optional[str] = None
     rating: Optional[int] = Field(None, ge=1, le=5)
