@@ -1,5 +1,6 @@
 import uuid
 from typing import Optional, Literal, List
+from sqlalchemy.orm import selectinload
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
@@ -179,10 +180,16 @@ def _validate_feature_list(raw_list: List[dict]) -> List[str]:
     return out
 
 
-async def _get_with_bg(session: AsyncSession, all_: bool) -> List[TabsWithBackground]:
-    q = select(TabsWithBackground).order_by(TabsWithBackground.order.asc(), TabsWithBackground.id.asc())
+async def _get_with_bg(session: AsyncSession, all_: bool) -> list[TabsWithBackground]:
+    q = (
+        select(TabsWithBackground)
+        .options(selectinload(TabsWithBackground.features))
+        .order_by(TabsWithBackground.order.asc(), TabsWithBackground.id.asc())
+    )
+
     if not all_:
-        q = q.where(TabsWithBackground.isVisible == True)  # noqa: E712
+        q = q.where(TabsWithBackground.isVisible == True)
+
     rows = await session.execute(q)
     return rows.scalars().unique().all()
 
