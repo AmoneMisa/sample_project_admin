@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session
 from ..deps.require_user import require_editor
-from ..models.models import Testimonial
+from ..models.models import AnimatedText
 from ..utils.redis_client import get_redis
 
-router = APIRouter(prefix="/testimonials", tags=["Testimonials"])
+router = APIRouter(prefix="/animated-text", tags=["AnimatedText"])
 
 
 # ---------------------------------------------------------
@@ -26,26 +26,16 @@ def api_error(code: str, message: str, status: int = 400, field: str | None = No
 # ---------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------
-class TestimonialCreate(BaseModel):
-    nameKey: str = Field(..., min_length=1)
-    roleKey: str = Field(..., min_length=1)
-    quoteKey: str = Field(..., min_length=1)
-    avatar: Optional[str] = None
-    logo: Optional[str] = None
-    rating: int = Field(default=5, ge=1, le=5)
-    order: int = 0
+class AnimatedTextCreate(BaseModel):
+    titleKey: str = Field(..., min_length=1)
     isVisible: bool = True
+    order: int = 0
 
 
-class TestimonialUpdate(BaseModel):
-    nameKey: Optional[str] = Field(None, min_length=1)
-    roleKey: Optional[str] = Field(None, min_length=1)
-    quoteKey: Optional[str] = Field(None, min_length=1)
-    avatar: Optional[str] = None
-    logo: Optional[str] = None
-    rating: Optional[int] = Field(None, ge=1, le=5)
-    order: Optional[int] = None
+class AnimatedTextUpdate(BaseModel):
+    titleKey: Optional[str] = Field(None, min_length=1)
     isVisible: Optional[bool] = None
+    order: Optional[int] = None
 
 
 class OrderItem(BaseModel):
@@ -58,110 +48,108 @@ class BulkOrderUpdate(BaseModel):
 
 
 # ---------------------------------------------------------
-# GET /testimonials
+# GET /animated-text
 # ---------------------------------------------------------
 @router.get("")
-async def get_testimonials(session: AsyncSession = Depends(get_session)):
+async def get_animated_texts(session: AsyncSession = Depends(get_session)):
     rows = await session.execute(
-        select(Testimonial).order_by(Testimonial.order.asc(), Testimonial.id.asc())
+        select(AnimatedText).order_by(AnimatedText.order.asc(), AnimatedText.id.asc())
     )
     return rows.scalars().all()
 
 
 # ---------------------------------------------------------
-# POST /testimonials
+# POST /animated-text
 # ---------------------------------------------------------
 @router.post("")
-async def create_testimonial(
-        payload: TestimonialCreate,
+async def create_animated_text(
+        payload: AnimatedTextCreate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    t = Testimonial(**payload.dict())
-    session.add(t)
+    item = AnimatedText(**payload.dict())
+    session.add(item)
     await session.commit()
-    await session.refresh(t)
+    await session.refresh(item)
 
     redis = get_redis()
-    await redis.delete("testimonials")
+    await redis.delete("animated_text")
 
-    return {"status": "created", "testimonial": t}
+    return {"status": "created", "animatedText": item}
 
 
 # ---------------------------------------------------------
-# PATCH /testimonials/{id}
+# PATCH /animated-text/{id}
 # ---------------------------------------------------------
 @router.patch("/{id}")
-async def update_testimonial(
+async def update_animated_text(
         id: str,
-        payload: TestimonialUpdate,
+        payload: AnimatedTextUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    t = await session.get(Testimonial, id)
-    if not t:
-        api_error("NOT_FOUND", "Отзыв не найден", status=404)
+    item = await session.get(AnimatedText, id)
+    if not item:
+        api_error("NOT_FOUND", "Animated text не найден", status=404)
 
     for k, v in payload.dict(exclude_unset=True).items():
-        setattr(t, k, v)
+        setattr(item, k, v)
 
     await session.commit()
-    await session.refresh(t)
+    await session.refresh(item)
 
     redis = get_redis()
-    await redis.delete("testimonials")
+    await redis.delete("animated_text")
 
-    return {"status": "updated", "testimonial": t}
+    return {"status": "updated", "animatedText": item}
 
 
 # ---------------------------------------------------------
-# DELETE /testimonials/{id}
+# DELETE /animated-text/{id}
 # ---------------------------------------------------------
 @router.delete("/{id}")
-async def delete_testimonial(
+async def delete_animated_text(
         id: str,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    t = await session.get(Testimonial, id)
-    if not t:
-        api_error("NOT_FOUND", "Отзыв не найден", status=404)
+    item = await session.get(AnimatedText, id)
+    if not item:
+        api_error("NOT_FOUND", "Animated text не найден", status=404)
 
-    await session.delete(t)
+    await session.delete(item)
     await session.commit()
 
     redis = get_redis()
-    await redis.delete("testimonials")
+    await redis.delete("animated_text")
 
     return {"status": "deleted"}
 
 
 # ---------------------------------------------------------
-# PATCH /testimonials/reorder
+# PATCH /animated-text/reorder
 # ---------------------------------------------------------
 @router.patch("/reorder")
-async def reorder_testimonials(
+async def reorder_animated_texts(
         payload: BulkOrderUpdate,
         session: AsyncSession = Depends(get_session),
         user=Depends(require_editor),
 ):
-    # Validate all IDs exist
-    for item in payload.items:
-        exists = await session.get(Testimonial, item.id)
+    for it in payload.items:
+        exists = await session.get(AnimatedText, it.id)
         if not exists:
-            api_error("NOT_FOUND", f"Отзыв с id={item.id} не найден", field="items", status=404)
+            api_error("NOT_FOUND", f"Animated text с id={it.id} не найден", field="items", status=404)
 
-    # Apply updates
-    for item in payload.items:
+    for it in payload.items:
         await session.execute(
-            update(Testimonial)
-            .where(Testimonial.id == item.id)
-            .values(order=item.order)
+            update(AnimatedText)
+            .where(AnimatedText.id == it.id)
+            .values(order=it.order)
         )
 
     await session.commit()
 
     redis = get_redis()
-    await redis.delete("testimonials")
+    await redis.delete("animated_text")
 
     return {"status": "reordered"}

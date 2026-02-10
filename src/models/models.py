@@ -370,3 +370,11 @@ class TabsUnderbutton(Base):
 
     createdAt = Column(DateTime, default=lambda: datetime.now(UTC))
     updatedAt = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class AnimatedText(Base):
+    __tablename__ = "AnimatedText"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    titleKey = Column(String(255), nullable=False)
+    isVisible = Column(Boolean, default=True, nullable=False)
+    order = Column(Integer, default=0, nullable=False)
