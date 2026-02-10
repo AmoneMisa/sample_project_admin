@@ -363,10 +363,10 @@ async def create_tab(
 
 
 # ---------------------------------------------------------
-# PATCH /tabs/mass  (массовое обновление)
+# PATCH /tabs (массовое обновление)
 #  - для with-background: если пришло поле list → полностью заменяем фичи
 # ---------------------------------------------------------
-@router.patch("/", response_model=ApiResponse)
+@router.patch("", response_model=ApiResponse)
 async def patch_tabs_mass(
         payload: TabsMassPatch,
         session: AsyncSession = Depends(get_session),
@@ -425,7 +425,7 @@ async def patch_tabs_mass(
 # ---------------------------------------------------------
 # DELETE /tabs  (массовое удаление)
 # ---------------------------------------------------------
-@router.delete("/", response_model=ApiResponse)
+@router.delete("", response_model=ApiResponse)
 async def delete_tabs_mass(
         payload: TabsMassDelete,
         session: AsyncSession = Depends(get_session),
