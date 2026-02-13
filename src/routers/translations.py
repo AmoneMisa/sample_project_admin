@@ -1,8 +1,11 @@
 import codecs
 import json
 from pathlib import Path
-from typing import List, Union, Optional
-
+from typing import List, Union
+import io
+import zipfile
+from datetime import datetime
+from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, Query, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -224,7 +227,7 @@ async def import_translations(
                 select(TranslationValue).where(
                     TranslationValue.translationKeyId == key.id,
                     TranslationValue.languageId == lang.id,
-                    )
+                )
             )
 
             if existing_value:
@@ -306,7 +309,7 @@ async def create_translation(
                 select(TranslationValue).where(
                     TranslationValue.translationKeyId == key_row.id,
                     TranslationValue.languageId == lang.id,
-                    )
+                )
             )
 
             if existing_value:
@@ -453,3 +456,81 @@ async def delete_translations(
         await redis.delete(f"translations:{lang}")
 
     return {"status": "deleted", "count": len(payload.keys)}
+
+
+@router.get("/export")
+async def export_translations(
+        langKey: str = Query(..., min_length=2),
+        enabledOnly: bool = Query(False),
+        session: AsyncSession = Depends(get_session),
+        user=Depends(require_editor),
+):
+    codes = [c.strip() for c in langKey.split(",") if c.strip()]
+    seen = set()
+    codes = [c for c in codes if not (c in seen or seen.add(c))]
+
+    if not codes:
+        api_error("LANG_KEYS_REQUIRED", "Передай langKey в формате ru,en,kk", field="langKey", status=422)
+
+    lang_query = select(Language).where(Language.code.in_(codes))
+    if enabledOnly:
+        lang_query = lang_query.where(Language.isEnabled.is_(True))
+
+    langs = (await session.execute(lang_query)).scalars().all()
+    lang_by_code = {l.code: l for l in langs}
+
+    missing = [c for c in codes if c not in lang_by_code]
+    if missing:
+        api_error(
+            "LANGUAGE_NOT_FOUND",
+            f"Не найдены языки: {', '.join(missing)}",
+            field="langKey",
+            status=404
+        )
+
+    # 3) fetch values for selected languages
+    values = await session.execute(
+        select(TranslationValue, TranslationKey, Language)
+        .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
+        .join(Language, Language.id == TranslationValue.languageId)
+        .where(Language.code.in_(codes))
+    )
+
+    flat_by_lang: dict[str, dict] = {c: {} for c in codes}
+
+    for value_row, key_row, lang_row in values.all():
+        try:
+            parsed = json.loads(value_row.value)
+        except Exception:
+            parsed = value_row.value
+
+        flat_by_lang[lang_row.code][key_row.key] = parsed
+
+    # 4) build trees and zip
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        meta = {
+            "_meta": {
+                "exportedAt": datetime.utcnow().isoformat() + "Z",
+                "languages": codes,
+                "format": "tree",
+            }
+        }
+
+        for code in codes:
+            tree = build_tree(flat_by_lang.get(code, {}))
+            payload = {**meta, **tree}
+
+            z.writestr(
+                f"{code}.json",
+                json.dumps(payload, ensure_ascii=False, indent=2)
+            )
+
+    buf.seek(0)
+    filename = f"translations_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}Z.zip"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
