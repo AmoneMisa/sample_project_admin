@@ -193,6 +193,7 @@ def decode_unicode(value):
 @router.post("/import")
 async def import_translations(
         files: list[UploadFile] = File(...),
+        rewrite: bool = Query(False),
         session: AsyncSession = Depends(get_session),
         user=Depends(require_permission("translations", "update")),
 ):
@@ -211,7 +212,7 @@ async def import_translations(
 
         for key_str, value in flat.items():
             value = decode_unicode(value)
-            value = normalize_value_for_db(value)  # строка/число/None
+            value = normalize_value_for_db(value)
 
             key = await session.scalar(select(TranslationKey).where(TranslationKey.key == key_str))
             if not key:
@@ -225,8 +226,18 @@ async def import_translations(
                     TranslationValue.languageId == lang.id,
                     )
             )
+
             if existing_value:
-                existing_value.value = value
+                # режим по умолчанию: НЕ перезаписываем существующий перевод,
+                # но можем заполнить пустой (None / "")
+
+                if rewrite:
+                    existing_value.value = value
+                else:
+                    is_empty = existing_value.value is None or existing_value.value == ""
+                    if is_empty:
+                        existing_value.value = value
+                    # иначе — пропускаем
             else:
                 session.add(
                     TranslationValue(
@@ -244,7 +255,7 @@ async def import_translations(
     for lang_code in updated_langs:
         await redis.delete(f"translations:{lang_code}")
 
-    return {"status": "imported", "languages": list(updated_langs)}
+    return {"status": "imported", "languages": list(updated_langs), "rewrite": rewrite}
 
 
 # ---------------------------------------------------------
