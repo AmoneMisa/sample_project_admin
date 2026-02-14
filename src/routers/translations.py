@@ -193,6 +193,28 @@ def decode_unicode(value):
     return value
 
 
+async def fetch_flat_for_langs(session: AsyncSession, codes: list[str]) -> dict[str, dict]:
+    if not codes:
+        return {}
+
+    values = await session.execute(
+        select(TranslationValue, TranslationKey, Language)
+        .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
+        .join(Language, Language.id == TranslationValue.languageId)
+        .where(Language.code.in_(codes))
+    )
+
+    out: dict[str, dict] = {c: {} for c in codes}
+    for value_row, key_row, lang_row in values.all():
+        try:
+            parsed = json.loads(value_row.value)
+        except Exception:
+            parsed = value_row.value
+        out[lang_row.code][key_row.key] = parsed
+
+    return out
+
+
 @router.post("/import")
 async def import_translations(
         files: list[UploadFile] = File(...),
@@ -252,13 +274,20 @@ async def import_translations(
 
         updated_langs.add(lang_code)
 
-    await session.commit()
+        await session.commit()
 
     redis = get_redis()
     for lang_code in updated_langs:
         await redis.delete(f"translations:{lang_code}")
 
-    return {"status": "imported", "languages": list(updated_langs), "rewrite": rewrite}
+    data = await fetch_flat_for_langs(session, sorted(updated_langs))
+
+    return {
+        "status": "imported",
+        "languages": list(updated_langs),
+        "rewrite": rewrite,
+        "data": data,
+    }
 
 
 # ---------------------------------------------------------
@@ -488,7 +517,6 @@ async def export_translations(
             status=404
         )
 
-    # 3) fetch values for selected languages
     values = await session.execute(
         select(TranslationValue, TranslationKey, Language)
         .join(TranslationKey, TranslationKey.id == TranslationValue.translationKeyId)
@@ -506,24 +534,14 @@ async def export_translations(
 
         flat_by_lang[lang_row.code][key_row.key] = parsed
 
-    # 4) build trees and zip
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        meta = {
-            "_meta": {
-                "exportedAt": datetime.utcnow().isoformat() + "Z",
-                "languages": codes,
-                "format": "tree",
-            }
-        }
-
         for code in codes:
             tree = build_tree(flat_by_lang.get(code, {}))
-            payload = {**meta, **tree}
 
             z.writestr(
                 f"{code}.json",
-                json.dumps(payload, ensure_ascii=False, indent=2)
+                json.dumps(tree, ensure_ascii=False, indent=2)
             )
 
     buf.seek(0)
