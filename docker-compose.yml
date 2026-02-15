@@ -36,6 +36,8 @@ services:
       REACT_APP_API_URL: "/api"
     depends_on:
       - backend
+    ports:
+          - "127.0.0.1:8081:80"
 
   frontend:
     build:
