@@ -1,11 +1,8 @@
 import json
 import re
-from pathlib import Path
 from typing import Optional
-from uuid import uuid4
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,11 +15,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 TG_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 
-ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
-MAX_IMAGE_BYTES = 6 * 1024 * 1024
-
-CHAT_STORAGE_DIR = Path("storage/chat_uploads")
-
 
 def _client_id(request: Request) -> str:
     return (request.headers.get("X-Client-Id") or "").strip()
@@ -32,81 +24,65 @@ def _ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
 
 
-def _safe_filename(ext: str) -> str:
-    return f"{uuid4().hex}{ext}"
+async def _push_ws_message(client_id: str, session_id: int, sender: str, text: str, created_at_iso: str):
+    await ws_manager.send(client_id, {
+        "type": "message",
+        "sessionId": session_id,
+        "sender": sender,
+        "text": text,
+        "createdAt": created_at_iso,
+    })
 
 
-def _ext_from_content_type(content_type: str) -> str:
-    if content_type == "image/png":
-        return ".png"
-    if content_type == "image/jpeg":
-        return ".jpg"
-    if content_type == "image/webp":
-        return ".webp"
-    return ""
+async def _add_message(db: AsyncSession, session_id: int, sender: str, text: str) -> ChatMessage:
+    m = ChatMessage(session_id=session_id, sender=sender, text=text)
+    db.add(m)
+    await db.commit()
+    await db.refresh(m)
+    return m
 
 
-def _build_file_url(request: Request, session_id: int, filename: str) -> str:
-    base = str(request.base_url).rstrip("/")
-    return f"{base}/chat/file/{session_id}/{filename}"
-
-
-async def _get_or_create_session(db: AsyncSession, request: Request, client_id: str, ip: Optional[str]) -> ChatSession:
+async def _get_last_session(db: AsyncSession, client_id: str) -> Optional[ChatSession]:
     q = (
         select(ChatSession)
         .where(ChatSession.client_id == client_id)
         .order_by(desc(ChatSession.id))
         .limit(1)
     )
-    s = (await db.execute(q)).scalars().first()
+    return (await db.execute(q)).scalars().first()
+
+
+async def _get_or_create_session(db: AsyncSession, client_id: str, ip: Optional[str]) -> ChatSession:
+    s = await _get_last_session(db, client_id)
     if s:
         return s
 
-    s = ChatSession(client_id=client_id, ip=ip, status=SessionStatus.active)
+    s = ChatSession(client_id=client_id, ip=ip, status=SessionStatus.new)
     db.add(s)
     await db.commit()
     await db.refresh(s)
 
-    r = get_redis()
-    await r.publish("tg.notify", json.dumps({
-        "type": "session_started",
-        "sessionId": s.id,
-        "source": "site",
-        "clientId": client_id,
-        "locale": {
-            "code": getattr(s, "locale_code", "ru") or "ru",
-            "name": getattr(s, "locale_name", "Русский") or "Русский",
-        },
-        "locales": [
-            {"code": "en", "name": "English"},
-            {"code": "ru", "name": "Русский"},
-            {"code": "kk", "name": "Қазақша"},
-        ],
-    }, ensure_ascii=False))
+    if hasattr(s, "last_activity_at"):
+        setattr(s, "last_activity_at", func.now())
+        await db.commit()
+
+    intro = "Где вам удобнее продолжить общение: на сайте или в Telegram?"
+    m = await _add_message(db, s.id, "owner", intro)
+
+    await _push_ws_message(client_id, s.id, "owner", intro, m.created_at.isoformat())
+
+    try:
+        r = get_redis()
+        await r.publish("tg.notify", json.dumps({
+            "type": "session_started",
+            "source": "site",
+            "sessionId": s.id,
+            "clientId": client_id,
+        }, ensure_ascii=False))
+    except Exception:
+        pass
 
     return s
-
-
-async def _save_session_image(session_id: int, file: UploadFile) -> str:
-    if file.content_type not in ALLOWED_IMAGE_TYPES:
-        raise ValueError("invalid_type")
-
-    content = await file.read()
-    if len(content) > MAX_IMAGE_BYTES:
-        raise ValueError("too_large")
-
-    ext = _ext_from_content_type(file.content_type)
-    if not ext:
-        raise ValueError("invalid_type")
-
-    folder = CHAT_STORAGE_DIR / str(session_id)
-    folder.mkdir(parents=True, exist_ok=True)
-
-    filename = _safe_filename(ext)
-    path = folder / filename
-    path.write_bytes(content)
-
-    return filename
 
 
 @router.get("/history")
@@ -115,17 +91,10 @@ async def history(request: Request):
     if not client_id:
         return {"ok": False, "error": "missing_client_id"}
 
-    async with SessionLocal() as db:
-        q = (
-            select(ChatSession)
-            .where(ChatSession.client_id == client_id)
-            .order_by(desc(ChatSession.id))
-            .limit(1)
-        )
-        s = (await db.execute(q)).scalars().first()
+    ip = _ip(request)
 
-        if not s:
-            return {"ok": True, "session": None, "messages": []}
+    async with SessionLocal() as db:
+        s = await _get_or_create_session(db, client_id, ip)
 
         mq = (
             select(ChatMessage)
@@ -137,97 +106,140 @@ async def history(request: Request):
 
         return {
             "ok": True,
-            "session": {"id": s.id, "status": s.status, "tgUsername": getattr(s, "tg_username", None)},
+            "session": {
+                "id": s.id,
+                "status": s.status,
+                "tgUsername": getattr(s, "tg_username", None),
+            },
             "messages": [
                 {
                     "id": m.id,
                     "sender": m.sender,
                     "text": m.text,
                     "createdAt": m.created_at.isoformat(),
-                    "imageUrl": getattr(m, "image_url", None)
                 }
                 for m in msgs
             ],
         }
 
 
-@router.get("/status")
-async def status(request: Request):
+@router.post("/choose")
+async def choose(payload: dict, request: Request):
     client_id = _client_id(request)
     if not client_id:
         return {"ok": False, "error": "missing_client_id"}
 
-    async with SessionLocal() as db:
-        q = (
-            select(ChatSession)
-            .where(ChatSession.client_id == client_id)
-            .order_by(desc(ChatSession.id))
-            .limit(1)
-        )
-        s = (await db.execute(q)).scalars().first()
-
-        if not s:
-            return {"ok": True, "session": None}
-
-        return {"ok": True, "session": {"id": s.id, "status": s.status, "tgUsername": getattr(s, "tg_username", None)}}
-
-
-@router.post("/send")
-async def send(
-        request: Request,
-        text: str = Form(""),
-        file: UploadFile | None = File(default=None),
-):
-    client_id = _client_id(request)
-    if not client_id:
-        return {"ok": False, "error": "missing_client_id"}
-
-    text_value = (text or "").strip()
-    if not text_value and file is None:
-        return {"ok": False, "error": "empty"}
+    channel = (payload.get("channel") or "").strip()
+    if channel not in ("site", "telegram"):
+        return {"ok": False, "error": "invalid_channel"}
 
     ip = _ip(request)
 
-    image_url: Optional[str] = None
-
     async with SessionLocal() as db:
-        s = await _get_or_create_session(db, request, client_id, ip)
+        s = await _get_or_create_session(db, client_id, ip)
         if s.status == SessionStatus.closed:
             return {"ok": False, "error": "closed"}
 
-        if file is not None:
-            try:
-                filename = await _save_session_image(s.id, file)
-            except ValueError as e:
-                code = str(e)
-                if code == "invalid_type":
-                    return {"ok": False, "error": "invalid_file_type"}
-                if code == "too_large":
-                    return {"ok": False, "error": "file_too_large"}
-                return {"ok": False, "error": "file_error"}
+        if channel == "site":
+            s.status = SessionStatus.active
+            if hasattr(s, "last_activity_at"):
+                setattr(s, "last_activity_at", func.now())
+            await db.commit()
 
-            image_url = _build_file_url(request, s.id, filename)
+            text = "Ок. Напишите сообщение здесь — и я отвечу."
+            m = await _add_message(db, s.id, "owner", text)
+            await _push_ws_message(client_id, s.id, "owner", text, m.created_at.isoformat())
+            return {"ok": True}
 
-        m = ChatMessage(session_id=s.id, sender="client", text=text_value)
-        if hasattr(m, "image_url"):
-            setattr(m, "image_url", image_url)
-        db.add(m)
+        s.status = SessionStatus.awaiting_username
+        if hasattr(s, "last_activity_at"):
+            setattr(s, "last_activity_at", func.now())
+        await db.commit()
 
+        text = "Введите ваш ник в Telegram в формате @username"
+        m = await _add_message(db, s.id, "owner", text)
+        await _push_ws_message(client_id, s.id, "owner", text, m.created_at.isoformat())
+
+        return {"ok": True}
+
+
+@router.post("/set-telegram")
+async def set_telegram(payload: dict, request: Request):
+    client_id = _client_id(request)
+    if not client_id:
+        return {"ok": False, "error": "missing_client_id"}
+
+    tg_username = (payload.get("tgUsername") or "").strip()
+    if not TG_USERNAME_RE.match(tg_username):
+        return {"ok": False, "error": "invalid_username"}
+
+    ip = _ip(request)
+
+    async with SessionLocal() as db:
+        s = await _get_or_create_session(db, client_id, ip)
+        if s.status == SessionStatus.closed:
+            return {"ok": False, "error": "closed"}
+
+        if hasattr(s, "tg_username"):
+            setattr(s, "tg_username", tg_username)
+
+        s.status = SessionStatus.closed
+        if hasattr(s, "closed_at"):
+            setattr(s, "closed_at", func.now())
         if hasattr(s, "last_activity_at"):
             setattr(s, "last_activity_at", func.now())
 
         await db.commit()
-        await db.refresh(m)
 
-    ws_payload = {
-        "type": "message",
-        "sessionId": s.id,
-        "sender": "client",
-        "text": text_value,
-        "createdAt": m.created_at.isoformat(),
-        "imageUrl": image_url,
-    }
-    await ws_manager.send(client_id, ws_payload)
+        thanks = "Спасибо. Разработчик свяжется с вами как можно скорее с ника @WhitesLove"
+        m = await _add_message(db, s.id, "owner", thanks)
+        await _push_ws_message(client_id, s.id, "owner", thanks, m.created_at.isoformat())
+
+        await ws_manager.send(client_id, {
+            "type": "session_closed",
+            "sessionId": s.id,
+            "reason": "telegram",
+        })
+
+        try:
+            r = get_redis()
+            await r.publish("tg.notify", json.dumps({
+                "type": "tg_username",
+                "source": "site",
+                "sessionId": s.id,
+                "clientId": client_id,
+                "tgUsername": tg_username,
+            }, ensure_ascii=False))
+        except Exception:
+            pass
+
+        return {"ok": True}
+
+
+@router.post("/send")
+async def send(payload: dict, request: Request):
+    client_id = _client_id(request)
+    if not client_id:
+        return {"ok": False, "error": "missing_client_id"}
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty"}
+
+    ip = _ip(request)
+
+    async with SessionLocal() as db:
+        s = await _get_or_create_session(db, client_id, ip)
+        if s.status != SessionStatus.active:
+            return {"ok": False, "error": "not_active"}
+
+        m = await _add_message(db, s.id, "client", text)
+
+        if hasattr(s, "last_activity_at"):
+            setattr(s, "last_activity_at", func.now())
+            await db.commit()
+
+    await _push_ws_message(client_id, s.id, "client", text, m.created_at.isoformat())
 
     try:
         r = get_redis()
@@ -236,132 +248,13 @@ async def send(
             "source": "site",
             "sessionId": s.id,
             "clientId": client_id,
-            "text": text_value,
+            "text": text,
             "createdAt": m.created_at.isoformat(),
-            "imageUrl": image_url,
         }, ensure_ascii=False))
     except Exception:
         pass
 
     return {"ok": True, "sessionId": s.id}
-
-
-@router.post("/owner-reply")
-async def owner_reply(
-        request: Request,
-        sessionId: int = Form(...),
-        text: str = Form(""),
-        file: UploadFile | None = File(default=None),
-):
-    text_value = (text or "").strip()
-    if not text_value and file is None:
-        return {"ok": False, "error": "empty"}
-
-    image_url: Optional[str] = None
-    client_id: Optional[str] = None
-
-    async with SessionLocal() as db:
-        s = await db.get(ChatSession, int(sessionId))
-        if not s or s.status == SessionStatus.closed:
-            return {"ok": False, "error": "closed"}
-
-        client_id = s.client_id
-
-        if file is not None:
-            try:
-                filename = await _save_session_image(s.id, file)
-            except ValueError as e:
-                code = str(e)
-                if code == "invalid_type":
-                    return {"ok": False, "error": "invalid_file_type"}
-                if code == "too_large":
-                    return {"ok": False, "error": "file_too_large"}
-                return {"ok": False, "error": "file_error"}
-
-            image_url = _build_file_url(request, s.id, filename)
-
-        m = ChatMessage(session_id=s.id, sender="owner", text=text_value)
-        if hasattr(m, "image_url"):
-            setattr(m, "image_url", image_url)
-        db.add(m)
-
-        if hasattr(s, "last_activity_at"):
-            setattr(s, "last_activity_at", func.now())
-
-        await db.commit()
-        await db.refresh(m)
-
-    await ws_manager.send(client_id, {
-        "type": "message",
-        "sessionId": int(sessionId),
-        "sender": "owner",
-        "text": text_value,
-        "createdAt": m.created_at.isoformat(),
-        "imageUrl": image_url,
-    })
-
-    return {"ok": True}
-
-
-@router.post("/set-channel")
-async def set_channel(payload: dict, request: Request):
-    client_id = _client_id(request)
-    if not client_id:
-        return {"ok": False, "error": "missing_client_id"}
-
-    channel = payload.get("channel")
-    tg_username = (payload.get("tgUsername") or "").strip()
-
-    ip = _ip(request)
-
-    async with SessionLocal() as db:
-        s = await _get_or_create_session(db, request, client_id, ip)
-        if s.status == SessionStatus.closed:
-            return {"ok": False, "error": "closed"}
-
-        if channel == "telegram":
-            if not TG_USERNAME_RE.match(tg_username):
-                return {"ok": False, "error": "invalid_username"}
-
-            if hasattr(s, "tg_username"):
-                setattr(s, "tg_username", tg_username)
-
-            if hasattr(s, "status"):
-                s.status = SessionStatus.awaiting_username
-
-            if hasattr(s, "last_activity_at"):
-                setattr(s, "last_activity_at", func.now())
-
-            await db.commit()
-
-            r = get_redis()
-            await r.publish("tg.notify", json.dumps({
-                "type": "request_tg_username",
-                "source": "telegram",
-                "sessionId": s.id,
-                "clientId": client_id,
-                "tgUsername": tg_username,
-            }, ensure_ascii=False))
-
-        elif channel == "site":
-            if s.status != SessionStatus.closed:
-                s.status = SessionStatus.active
-                if hasattr(s, "last_activity_at"):
-                    setattr(s, "last_activity_at", func.now())
-                await db.commit()
-
-        else:
-            return {"ok": False, "error": "invalid_channel"}
-
-    return {"ok": True}
-
-
-@router.get("/file/{sessionId}/{filename}")
-async def get_file(sessionId: int, filename: str):
-    path = CHAT_STORAGE_DIR / str(int(sessionId)) / filename
-    if not path.exists():
-        return {"ok": False, "error": "not_found"}
-    return FileResponse(path)
 
 
 @router.websocket("/ws")
