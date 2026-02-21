@@ -3,8 +3,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy import select, desc, func
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc, func, exists, and_
 
 from ..db.session import SessionLocal
 from ..services.ws_manager import ws_manager
@@ -24,25 +23,7 @@ def _ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
 
 
-async def _push_ws_message(client_id: str, session_id: int, sender: str, text: str, created_at_iso: str):
-    await ws_manager.send(client_id, {
-        "type": "message",
-        "sessionId": session_id,
-        "sender": sender,
-        "text": text,
-        "createdAt": created_at_iso,
-    })
-
-
-async def _add_message(db: AsyncSession, session_id: int, sender: str, text: str) -> ChatMessage:
-    m = ChatMessage(session_id=session_id, sender=sender, text=text)
-    db.add(m)
-    await db.commit()
-    await db.refresh(m)
-    return m
-
-
-async def _get_last_session(db: AsyncSession, client_id: str) -> Optional[ChatSession]:
+async def _get_last_session(db, client_id: str) -> Optional[ChatSession]:
     q = (
         select(ChatSession)
         .where(ChatSession.client_id == client_id)
@@ -52,24 +33,83 @@ async def _get_last_session(db: AsyncSession, client_id: str) -> Optional[ChatSe
     return (await db.execute(q)).scalars().first()
 
 
-async def _get_or_create_session(db: AsyncSession, client_id: str, ip: Optional[str]) -> ChatSession:
+async def _has_client_messages(db, session_id: int) -> bool:
+    q = select(
+        exists().where(
+            and_(
+                ChatMessage.session_id == session_id,
+                ChatMessage.sender == "client",
+                )
+        )
+    )
+    return bool((await db.execute(q)).scalar())
+
+
+async def _compute_stage(db, s: ChatSession) -> str:
+    if s.status == SessionStatus.closed:
+        return "closed"
+    if s.status == SessionStatus.moved_to_telegram:
+        return "closed"
+    if s.status == SessionStatus.awaiting_username:
+        return "awaiting_username"
+    if s.status == SessionStatus.active:
+        has_client = await _has_client_messages(db, s.id)
+        if (not has_client) and (s.tg_username is None):
+            return "choose"
+        return "active"
+    return "choose"
+
+
+async def _push_session_update(client_id: str, s: ChatSession, stage: str):
+    await ws_manager.send(client_id, {
+        "type": "session_update",
+        "sessionId": s.id,
+        "status": s.status,
+        "stage": stage,
+        "tgUsername": s.tg_username,
+    })
+
+
+async def _push_message(client_id: str, m: ChatMessage):
+    await ws_manager.send(client_id, {
+        "type": "message",
+        "sessionId": m.session_id,
+        "id": m.id,
+        "sender": m.sender,
+        "text": m.text,
+        "createdAt": m.created_at.isoformat(),
+    })
+
+
+async def _push_closed(client_id: str, session_id: int, reason: str):
+    await ws_manager.send(client_id, {
+        "type": "session_closed",
+        "sessionId": session_id,
+        "reason": reason,
+    })
+
+
+async def _add_message(db, session_id: int, sender: str, text: str) -> ChatMessage:
+    m = ChatMessage(session_id=session_id, sender=sender, text=text)
+    db.add(m)
+    await db.commit()
+    await db.refresh(m)
+    return m
+
+
+async def _get_or_create_session(db, client_id: str, ip: Optional[str]) -> ChatSession:
     s = await _get_last_session(db, client_id)
     if s:
         return s
 
-    s = ChatSession(client_id=client_id, ip=ip, status=SessionStatus.new)
+    s = ChatSession(client_id=client_id, ip=ip, status=SessionStatus.active)
     db.add(s)
     await db.commit()
     await db.refresh(s)
 
-    if hasattr(s, "last_activity_at"):
-        setattr(s, "last_activity_at", func.now())
-        await db.commit()
-
     intro = "Где вам удобнее продолжить общение: на сайте или в Telegram?"
     m = await _add_message(db, s.id, "owner", intro)
-
-    await _push_ws_message(client_id, s.id, "owner", intro, m.created_at.isoformat())
+    await _push_message(client_id, m)
 
     try:
         r = get_redis()
@@ -95,6 +135,7 @@ async def history(request: Request):
 
     async with SessionLocal() as db:
         s = await _get_or_create_session(db, client_id, ip)
+        stage = await _compute_stage(db, s)
 
         mq = (
             select(ChatMessage)
@@ -109,7 +150,8 @@ async def history(request: Request):
             "session": {
                 "id": s.id,
                 "status": s.status,
-                "tgUsername": getattr(s, "tg_username", None),
+                "stage": stage,
+                "tgUsername": s.tg_username,
             },
             "messages": [
                 {
@@ -137,29 +179,30 @@ async def choose(payload: dict, request: Request):
 
     async with SessionLocal() as db:
         s = await _get_or_create_session(db, client_id, ip)
-        if s.status == SessionStatus.closed:
+        if s.status in (SessionStatus.closed, SessionStatus.moved_to_telegram):
             return {"ok": False, "error": "closed"}
 
         if channel == "site":
             s.status = SessionStatus.active
-            if hasattr(s, "last_activity_at"):
-                setattr(s, "last_activity_at", func.now())
             await db.commit()
 
             text = "Ок. Напишите сообщение здесь — и я отвечу."
             m = await _add_message(db, s.id, "owner", text)
-            await _push_ws_message(client_id, s.id, "owner", text, m.created_at.isoformat())
+            await _push_message(client_id, m)
+
+            stage = await _compute_stage(db, s)
+            await _push_session_update(client_id, s, stage)
             return {"ok": True}
 
         s.status = SessionStatus.awaiting_username
-        if hasattr(s, "last_activity_at"):
-            setattr(s, "last_activity_at", func.now())
         await db.commit()
 
         text = "Введите ваш ник в Telegram в формате @username"
         m = await _add_message(db, s.id, "owner", text)
-        await _push_ws_message(client_id, s.id, "owner", text, m.created_at.isoformat())
+        await _push_message(client_id, m)
 
+        stage = await _compute_stage(db, s)
+        await _push_session_update(client_id, s, stage)
         return {"ok": True}
 
 
@@ -177,29 +220,21 @@ async def set_telegram(payload: dict, request: Request):
 
     async with SessionLocal() as db:
         s = await _get_or_create_session(db, client_id, ip)
-        if s.status == SessionStatus.closed:
+        if s.status in (SessionStatus.closed, SessionStatus.moved_to_telegram):
             return {"ok": False, "error": "closed"}
 
-        if hasattr(s, "tg_username"):
-            setattr(s, "tg_username", tg_username)
-
-        s.status = SessionStatus.closed
-        if hasattr(s, "closed_at"):
-            setattr(s, "closed_at", func.now())
-        if hasattr(s, "last_activity_at"):
-            setattr(s, "last_activity_at", func.now())
-
+        s.tg_username = tg_username
+        s.status = SessionStatus.moved_to_telegram
+        s.closed_at = func.now()
         await db.commit()
 
         thanks = "Спасибо. Разработчик свяжется с вами как можно скорее с ника @WhitesLove"
         m = await _add_message(db, s.id, "owner", thanks)
-        await _push_ws_message(client_id, s.id, "owner", thanks, m.created_at.isoformat())
+        await _push_message(client_id, m)
 
-        await ws_manager.send(client_id, {
-            "type": "session_closed",
-            "sessionId": s.id,
-            "reason": "telegram",
-        })
+        stage = await _compute_stage(db, s)
+        await _push_session_update(client_id, s, stage)
+        await _push_closed(client_id, s.id, "telegram")
 
         try:
             r = get_redis()
@@ -230,31 +265,79 @@ async def send(payload: dict, request: Request):
 
     async with SessionLocal() as db:
         s = await _get_or_create_session(db, client_id, ip)
-        if s.status != SessionStatus.active:
+        stage = await _compute_stage(db, s)
+
+        if stage != "active":
             return {"ok": False, "error": "not_active"}
 
         m = await _add_message(db, s.id, "client", text)
+        await _push_message(client_id, m)
 
-        if hasattr(s, "last_activity_at"):
-            setattr(s, "last_activity_at", func.now())
+        try:
+            r = get_redis()
+            await r.publish("tg.notify", json.dumps({
+                "type": "chat_message",
+                "source": "site",
+                "sessionId": s.id,
+                "clientId": client_id,
+                "text": text,
+                "createdAt": m.created_at.isoformat(),
+            }, ensure_ascii=False))
+        except Exception:
+            pass
+
+        return {"ok": True, "sessionId": s.id}
+
+
+@router.post("/owner-reply")
+async def owner_reply(payload: dict, request: Request):
+    session_id = int(payload.get("sessionId") or 0)
+    text = (payload.get("text") or "").strip()
+
+    if not session_id or not text:
+        return {"ok": False, "error": "empty"}
+
+    async with SessionLocal() as db:
+        s = await db.get(ChatSession, session_id)
+        if not s:
+            return {"ok": False, "error": "not_found"}
+        if s.status in (SessionStatus.closed,):
+            return {"ok": False, "error": "closed"}
+
+        client_id = s.client_id
+
+        m = await _add_message(db, s.id, "owner", text)
+        await _push_message(client_id, m)
+
+        stage = await _compute_stage(db, s)
+        await _push_session_update(client_id, s, stage)
+
+        return {"ok": True}
+
+
+@router.post("/close")
+async def close(payload: dict, request: Request):
+    session_id = int(payload.get("sessionId") or 0)
+    reason = (payload.get("reason") or "closed").strip()
+    if not session_id:
+        return {"ok": False, "error": "empty"}
+
+    async with SessionLocal() as db:
+        s = await db.get(ChatSession, session_id)
+        if not s:
+            return {"ok": False, "error": "not_found"}
+
+        if s.status != SessionStatus.closed:
+            s.status = SessionStatus.closed
+            s.closed_at = func.now()
             await db.commit()
 
-    await _push_ws_message(client_id, s.id, "client", text, m.created_at.isoformat())
+        client_id = s.client_id
+        stage = await _compute_stage(db, s)
+        await _push_session_update(client_id, s, stage)
+        await _push_closed(client_id, s.id, reason)
 
-    try:
-        r = get_redis()
-        await r.publish("tg.notify", json.dumps({
-            "type": "chat_message",
-            "source": "site",
-            "sessionId": s.id,
-            "clientId": client_id,
-            "text": text,
-            "createdAt": m.created_at.isoformat(),
-        }, ensure_ascii=False))
-    except Exception:
-        pass
-
-    return {"ok": True, "sessionId": s.id}
+        return {"ok": True}
 
 
 @router.websocket("/ws")
