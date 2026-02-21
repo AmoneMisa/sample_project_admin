@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     MARIADB_PASSWORD: str
     MARIADB_DATABASE: str
     REDIS_HOST: str
+    BOT_TOKEN: str
+    OWNER_ID: str
+    POLLING: bool
 
     @property
     def database_url(self): return (
