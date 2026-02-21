@@ -5,7 +5,7 @@ from sqlalchemy import func
 from ..db.session import SessionLocal
 from ..utils.redis_client import get_redis
 from ..models.telegramModels import ChatSession, ChatMessage, SessionStatus
-from .ws_manager import WSManager
+from .ws_manager import ws_manager
 
 OWNER_REPLY_CH = "tg.owner_reply"
 SESSION_CLOSE_CH = "tg.session_close"
@@ -42,13 +42,13 @@ async def chat_bus_loop():
                 await _handle_owner_reply(payload)
 
             elif channel == SESSION_CLOSE_CH:
-                await _handle_owner_reply(payload)
+                await _handle_session_close(payload)
 
     finally:
         await pubsub.close()
 
 
-async def _handle_owner_reply(payload: dict, ws_manager: WSManager):
+async def _handle_owner_reply(payload: dict):
     session_id = int(payload["sessionId"])
     text = (payload.get("text") or "").strip()
     if not text:
@@ -73,7 +73,7 @@ async def _handle_owner_reply(payload: dict, ws_manager: WSManager):
         })
 
 
-async def _handle_session_close(payload: dict, ws_manager: WSManager):
+async def _handle_session_close(payload: dict):
     session_id = int(payload["sessionId"])
     reason = payload.get("reason", "closed")
 
