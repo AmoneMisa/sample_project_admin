@@ -2,8 +2,8 @@ import json
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy import select, desc, func, exists, and_
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Form
+from sqlalchemy import select, desc, func
 
 from ..db.session import SessionLocal
 from ..services.ws_manager import ws_manager
@@ -14,14 +14,17 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 TG_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
 
+AVAILABLE_LOCALES = [
+    {"code": "en", "name": "English"},
+    {"code": "ru", "name": "Русский"},
+    {"code": "kk", "name": "Қазақша"},
+]
 
 def _client_id(request: Request) -> str:
     return (request.headers.get("X-Client-Id") or "").strip()
 
-
 def _ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
-
 
 async def _get_last_session(db, client_id: str) -> Optional[ChatSession]:
     q = (
@@ -32,101 +35,34 @@ async def _get_last_session(db, client_id: str) -> Optional[ChatSession]:
     )
     return (await db.execute(q)).scalars().first()
 
-
-async def _has_client_messages(db, session_id: int) -> bool:
-    q = select(
-        exists().where(
-            and_(
-                ChatMessage.session_id == session_id,
-                ChatMessage.sender == "client",
-                )
-        )
-    )
-    return bool((await db.execute(q)).scalar())
-
-
-async def _compute_stage(db, s: ChatSession) -> str:
-    if s.status == SessionStatus.closed:
-        return "closed"
-    if s.status == SessionStatus.moved_to_telegram:
-        return "closed"
-    if s.status == SessionStatus.awaiting_username:
-        return "awaiting_username"
-    if s.status == SessionStatus.active:
-        has_client = await _has_client_messages(db, s.id)
-        if (not has_client) and (s.tg_username is None):
-            return "choose"
-        return "active"
-    return "choose"
-
-
-async def _push_session_update(client_id: str, s: ChatSession, stage: str):
-    await ws_manager.send(client_id, {
-        "type": "session_update",
-        "sessionId": s.id,
-        "status": s.status,
-        "stage": stage,
-        "tgUsername": s.tg_username,
-    })
-
-
-async def _push_message(client_id: str, m: ChatMessage):
-    await ws_manager.send(client_id, {
-        "type": "message",
-        "sessionId": m.session_id,
-        "id": m.id,
-        "sender": m.sender,
-        "text": m.text,
-        "createdAt": m.created_at.isoformat(),
-    })
-
-
-async def _push_closed(client_id: str, session_id: int, reason: str):
-    await ws_manager.send(client_id, {
-        "type": "session_closed",
-        "sessionId": session_id,
-        "reason": reason,
-    })
-
-
-async def _add_message(db, session_id: int, sender: str, text: str) -> ChatMessage:
-    m = ChatMessage(session_id=session_id, sender=sender, text=text)
-    db.add(m)
-    await db.commit()
-    await db.refresh(m)
-    return m
-
-
-async def _get_or_create_session(db, client_id: str, ip: Optional[str]) -> ChatSession:
-    s = await _get_last_session(db, client_id)
-    if s:
-        return s
-
+async def _create_session(db, client_id: str, ip: Optional[str]) -> ChatSession:
     s = ChatSession(client_id=client_id, ip=ip, status=SessionStatus.active)
     db.add(s)
     await db.commit()
     await db.refresh(s)
+    return s
 
-    intro = "Где вам удобнее продолжить общение: на сайте или в Telegram?"
-    m = await _add_message(db, s.id, "owner", intro)
-    await _push_message(client_id, m)
+async def _get_or_create_session(db, request: Request, client_id: str, ip: Optional[str]) -> ChatSession:
+    s = await _get_last_session(db, client_id)
+    if s and s.status != SessionStatus.closed:
+        return s
 
-    try:
-        r = get_redis()
-        await r.publish("tg.notify", json.dumps({
-            "type": "session_started",
-            "source": "site",
-            "sessionId": s.id,
-            "clientId": client_id,
-        }, ensure_ascii=False))
-    except Exception:
-        pass
+    s = await _create_session(db, client_id, ip)
+
+    r = get_redis()
+    await r.publish("tg.notify", json.dumps({
+        "type": "session_started",
+        "source": "site",
+        "sessionId": s.id,
+        "clientId": client_id,
+        "locale": {"code": "ru", "name": "Русский"},
+        "locales": AVAILABLE_LOCALES,
+    }, ensure_ascii=False))
 
     return s
 
-
-@router.get("/history")
-async def history(request: Request):
+@router.post("/start")
+async def start(request: Request):
     client_id = _client_id(request)
     if not client_id:
         return {"ok": False, "error": "missing_client_id"}
@@ -134,8 +70,24 @@ async def history(request: Request):
     ip = _ip(request)
 
     async with SessionLocal() as db:
-        s = await _get_or_create_session(db, client_id, ip)
-        stage = await _compute_stage(db, s)
+        s = await _get_or_create_session(db, request, client_id, ip)
+
+        return {
+            "ok": True,
+            "session": {"id": s.id, "status": s.status, "tgUsername": s.tg_username},
+        }
+
+@router.get("/history")
+async def history(request: Request):
+    client_id = _client_id(request)
+    if not client_id:
+        return {"ok": False, "error": "missing_client_id"}
+
+    async with SessionLocal() as db:
+        s = await _get_last_session(db, client_id)
+
+        if not s:
+            return {"ok": True, "session": None, "messages": []}
 
         mq = (
             select(ChatMessage)
@@ -147,198 +99,150 @@ async def history(request: Request):
 
         return {
             "ok": True,
-            "session": {
-                "id": s.id,
-                "status": s.status,
-                "stage": stage,
-                "tgUsername": s.tg_username,
-            },
+            "session": {"id": s.id, "status": s.status, "tgUsername": s.tg_username},
             "messages": [
-                {
-                    "id": m.id,
-                    "sender": m.sender,
-                    "text": m.text,
-                    "createdAt": m.created_at.isoformat(),
-                }
+                {"id": m.id, "sender": m.sender, "text": m.text, "createdAt": m.created_at.isoformat()}
                 for m in msgs
             ],
         }
 
-
-@router.post("/choose")
-async def choose(payload: dict, request: Request):
+@router.get("/status")
+async def status(request: Request):
     client_id = _client_id(request)
     if not client_id:
         return {"ok": False, "error": "missing_client_id"}
 
-    channel = (payload.get("channel") or "").strip()
-    if channel not in ("site", "telegram"):
-        return {"ok": False, "error": "invalid_channel"}
+    async with SessionLocal() as db:
+        s = await _get_last_session(db, client_id)
+
+        if not s:
+            return {"ok": True, "session": None}
+
+        return {"ok": True, "session": {"id": s.id, "status": s.status, "tgUsername": s.tg_username}}
+
+@router.post("/send")
+async def send(
+        request: Request,
+        text: str = Form(""),
+):
+    client_id = _client_id(request)
+    if not client_id:
+        return {"ok": False, "error": "missing_client_id"}
+
+    text_value = (text or "").strip()
+    if not text_value:
+        return {"ok": False, "error": "empty"}
 
     ip = _ip(request)
 
     async with SessionLocal() as db:
-        s = await _get_or_create_session(db, client_id, ip)
-        if s.status in (SessionStatus.closed, SessionStatus.moved_to_telegram):
-            return {"ok": False, "error": "closed"}
+        s = await _get_or_create_session(db, request, client_id, ip)
 
-        if channel == "site":
-            s.status = SessionStatus.active
-            await db.commit()
+        if s.status == SessionStatus.moved_to_telegram:
+            return {"ok": False, "error": "moved_to_telegram"}
 
-            text = "Ок. Напишите сообщение здесь — и я отвечу."
-            m = await _add_message(db, s.id, "owner", text)
-            await _push_message(client_id, m)
+        m = ChatMessage(session_id=s.id, sender="client", text=text_value)
+        db.add(m)
+        await db.commit()
+        await db.refresh(m)
 
-            stage = await _compute_stage(db, s)
-            await _push_session_update(client_id, s, stage)
+    ws_payload = {
+        "type": "message",
+        "sessionId": s.id,
+        "sender": "client",
+        "text": text_value,
+        "createdAt": m.created_at.isoformat(),
+    }
+    await ws_manager.send(client_id, ws_payload)
+
+    try:
+        r = get_redis()
+        await r.publish("tg.notify", json.dumps({
+            "type": "chat_message",
+            "source": "site",
+            "sessionId": s.id,
+            "clientId": client_id,
+            "text": text_value,
+            "createdAt": m.created_at.isoformat(),
+        }, ensure_ascii=False))
+    except Exception:
+        pass
+
+    return {"ok": True, "sessionId": s.id}
+
+@router.post("/close")
+async def close_chat(request: Request):
+    client_id = _client_id(request)
+    if not client_id:
+        return {"ok": False, "error": "missing_client_id"}
+
+    async with SessionLocal() as db:
+        s = await _get_last_session(db, client_id)
+        if not s or s.status == SessionStatus.closed:
             return {"ok": True}
 
-        s.status = SessionStatus.awaiting_username
-        await db.commit()
-
-        text = "Введите ваш ник в Telegram в формате @username"
-        m = await _add_message(db, s.id, "owner", text)
-        await _push_message(client_id, m)
-
-        stage = await _compute_stage(db, s)
-        await _push_session_update(client_id, s, stage)
-        return {"ok": True}
-
-
-@router.post("/set-telegram")
-async def set_telegram(payload: dict, request: Request):
-    client_id = _client_id(request)
-    if not client_id:
-        return {"ok": False, "error": "missing_client_id"}
-
-    tg_username = (payload.get("tgUsername") or "").strip()
-    if not TG_USERNAME_RE.match(tg_username):
-        return {"ok": False, "error": "invalid_username"}
-
-    ip = _ip(request)
-
-    async with SessionLocal() as db:
-        s = await _get_or_create_session(db, client_id, ip)
-        if s.status in (SessionStatus.closed, SessionStatus.moved_to_telegram):
-            return {"ok": False, "error": "closed"}
-
-        s.tg_username = tg_username
-        s.status = SessionStatus.moved_to_telegram
+        s.status = SessionStatus.closed
         s.closed_at = func.now()
         await db.commit()
 
-        thanks = "Спасибо. Разработчик свяжется с вами как можно скорее с ника @WhitesLove"
-        m = await _add_message(db, s.id, "owner", thanks)
-        await _push_message(client_id, m)
+    await ws_manager.send(client_id, {
+        "type": "session_closed",
+        "sessionId": s.id,
+        "reason": "closed_by_client",
+    })
 
-        stage = await _compute_stage(db, s)
-        await _push_session_update(client_id, s, stage)
-        await _push_closed(client_id, s.id, "telegram")
+    try:
+        r = get_redis()
+        await r.publish("tg.notify", json.dumps({
+            "type": "session_closed",
+            "source": "site",
+            "sessionId": s.id,
+            "clientId": client_id,
+            "reason": "closed_by_client",
+        }, ensure_ascii=False))
+    except Exception:
+        pass
 
-        try:
+    return {"ok": True}
+
+@router.post("/set-channel")
+async def set_channel(payload: dict, request: Request):
+    client_id = _client_id(request)
+    if not client_id:
+        return {"ok": False, "error": "missing_client_id"}
+
+    channel = payload.get("channel")
+    tg_username = (payload.get("tgUsername") or "").strip()
+    ip = _ip(request)
+
+    async with SessionLocal() as db:
+        s = await _get_or_create_session(db, request, client_id, ip)
+
+        if channel == "telegram":
+            if not TG_USERNAME_RE.match(tg_username):
+                return {"ok": False, "error": "invalid_username"}
+
+            s.tg_username = tg_username
+            s.status = SessionStatus.moved_to_telegram
+            await db.commit()
+
             r = get_redis()
             await r.publish("tg.notify", json.dumps({
-                "type": "tg_username",
-                "source": "site",
+                "type": "moved_to_telegram",
+                "source": "telegram",
                 "sessionId": s.id,
                 "clientId": client_id,
                 "tgUsername": tg_username,
             }, ensure_ascii=False))
-        except Exception:
-            pass
 
-        return {"ok": True}
+        elif channel == "site":
+            if s.status != SessionStatus.closed:
+                s.status = SessionStatus.active
+                await db.commit()
+        else:
+            return {"ok": False, "error": "invalid_channel"}
 
-
-@router.post("/send")
-async def send(payload: dict, request: Request):
-    client_id = _client_id(request)
-    if not client_id:
-        return {"ok": False, "error": "missing_client_id"}
-
-    text = (payload.get("text") or "").strip()
-    if not text:
-        return {"ok": False, "error": "empty"}
-
-    ip = _ip(request)
-
-    async with SessionLocal() as db:
-        s = await _get_or_create_session(db, client_id, ip)
-        stage = await _compute_stage(db, s)
-
-        if stage != "active":
-            return {"ok": False, "error": "not_active"}
-
-        m = await _add_message(db, s.id, "client", text)
-        await _push_message(client_id, m)
-
-        try:
-            r = get_redis()
-            await r.publish("tg.notify", json.dumps({
-                "type": "chat_message",
-                "source": "site",
-                "sessionId": s.id,
-                "clientId": client_id,
-                "text": text,
-                "createdAt": m.created_at.isoformat(),
-            }, ensure_ascii=False))
-        except Exception:
-            pass
-
-        return {"ok": True, "sessionId": s.id}
-
-
-@router.post("/owner-reply")
-async def owner_reply(payload: dict, request: Request):
-    session_id = int(payload.get("sessionId") or 0)
-    text = (payload.get("text") or "").strip()
-
-    if not session_id or not text:
-        return {"ok": False, "error": "empty"}
-
-    async with SessionLocal() as db:
-        s = await db.get(ChatSession, session_id)
-        if not s:
-            return {"ok": False, "error": "not_found"}
-        if s.status in (SessionStatus.closed,):
-            return {"ok": False, "error": "closed"}
-
-        client_id = s.client_id
-
-        m = await _add_message(db, s.id, "owner", text)
-        await _push_message(client_id, m)
-
-        stage = await _compute_stage(db, s)
-        await _push_session_update(client_id, s, stage)
-
-        return {"ok": True}
-
-
-@router.post("/close")
-async def close(payload: dict, request: Request):
-    session_id = int(payload.get("sessionId") or 0)
-    reason = (payload.get("reason") or "closed").strip()
-    if not session_id:
-        return {"ok": False, "error": "empty"}
-
-    async with SessionLocal() as db:
-        s = await db.get(ChatSession, session_id)
-        if not s:
-            return {"ok": False, "error": "not_found"}
-
-        if s.status != SessionStatus.closed:
-            s.status = SessionStatus.closed
-            s.closed_at = func.now()
-            await db.commit()
-
-        client_id = s.client_id
-        stage = await _compute_stage(db, s)
-        await _push_session_update(client_id, s, stage)
-        await _push_closed(client_id, s.id, reason)
-
-        return {"ok": True}
-
+    return {"ok": True}
 
 @router.websocket("/ws")
 async def ws_chat(ws: WebSocket, clientId: str):

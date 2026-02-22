@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     await init_admin()
 
     cleanup_task = asyncio.create_task(pdf_storage_cleanup_loop(), name="pdf_storage_cleanup_loop")
-    chat_bus_task = asyncio.create_task(chat_bus_loop(), name="chat_bus_loop")
+    chat_bus_task = asyncio.create_task(chat_bus_loop(ws_manager), name="chat_bus_loop")
 
     try:
         yield

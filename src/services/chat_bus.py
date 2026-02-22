@@ -1,23 +1,20 @@
 import json
-
 from sqlalchemy import func
 
 from ..db.session import SessionLocal
 from ..utils.redis_client import get_redis
 from ..models.telegramModels import ChatSession, ChatMessage, SessionStatus
-from .ws_manager import ws_manager
+from .ws_manager import WSManager
 
 OWNER_REPLY_CH = "tg.owner_reply"
 SESSION_CLOSE_CH = "tg.session_close"
-
 
 def _loads_redis_json(data):
     if isinstance(data, (bytes, bytearray)):
         data = data.decode("utf-8", "ignore")
     return json.loads(data)
 
-
-async def chat_bus_loop():
+async def chat_bus_loop(ws_manager: WSManager):
     r = get_redis()
     pubsub = r.pubsub()
     await pubsub.subscribe(OWNER_REPLY_CH, SESSION_CLOSE_CH)
@@ -39,16 +36,15 @@ async def chat_bus_loop():
                 continue
 
             if channel == OWNER_REPLY_CH:
-                await _handle_owner_reply(payload)
+                await _handle_owner_reply(payload, ws_manager)
 
             elif channel == SESSION_CLOSE_CH:
-                await _handle_session_close(payload)
+                await _handle_session_close(payload, ws_manager)
 
     finally:
         await pubsub.close()
 
-
-async def _handle_owner_reply(payload: dict):
+async def _handle_owner_reply(payload: dict, ws_manager: WSManager):
     session_id = int(payload["sessionId"])
     text = (payload.get("text") or "").strip()
     if not text:
@@ -72,8 +68,7 @@ async def _handle_owner_reply(payload: dict):
             "createdAt": m.created_at.isoformat(),
         })
 
-
-async def _handle_session_close(payload: dict):
+async def _handle_session_close(payload: dict, ws_manager: WSManager):
     session_id = int(payload["sessionId"])
     reason = payload.get("reason", "closed")
 
