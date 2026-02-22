@@ -9,10 +9,12 @@ from .ws_manager import WSManager
 OWNER_REPLY_CH = "tg.owner_reply"
 SESSION_CLOSE_CH = "tg.session_close"
 
+
 def _loads_redis_json(data):
     if isinstance(data, (bytes, bytearray)):
         data = data.decode("utf-8", "ignore")
     return json.loads(data)
+
 
 async def chat_bus_loop(ws_manager: WSManager):
     r = get_redis()
@@ -44,10 +46,11 @@ async def chat_bus_loop(ws_manager: WSManager):
     finally:
         await pubsub.close()
 
+
 async def _handle_owner_reply(payload: dict, ws_manager: WSManager):
-    session_id = int(payload["sessionId"])
+    session_id = int(payload.get("sessionId") or payload.get("session_id") or 0)
     text = (payload.get("text") or "").strip()
-    if not text:
+    if not session_id or not text:
         return
 
     async with SessionLocal() as db:
@@ -60,17 +63,24 @@ async def _handle_owner_reply(payload: dict, ws_manager: WSManager):
         await db.commit()
         await db.refresh(m)
 
-        await ws_manager.send(s.client_id, {
-            "type": "message",
-            "sessionId": session_id,
-            "sender": "owner",
-            "text": text,
-            "createdAt": m.created_at.isoformat(),
-        })
+        await ws_manager.send(
+            s.client_id,
+            {
+                "type": "message",
+                "id": m.id,
+                "sessionId": session_id,
+                "sender": "owner",
+                "text": text,
+                "createdAt": m.created_at.isoformat(),
+            },
+        )
+
 
 async def _handle_session_close(payload: dict, ws_manager: WSManager):
-    session_id = int(payload["sessionId"])
+    session_id = int(payload.get("sessionId") or payload.get("session_id") or 0)
     reason = payload.get("reason", "closed")
+    if not session_id:
+        return
 
     async with SessionLocal() as db:
         s = await db.get(ChatSession, session_id)
@@ -81,9 +91,14 @@ async def _handle_session_close(payload: dict, ws_manager: WSManager):
             s.status = SessionStatus.closed
             s.closed_at = func.now()
             await db.commit()
+            await db.refresh(s)
 
-        await ws_manager.send(s.client_id, {
-            "type": "session_closed",
-            "sessionId": session_id,
-            "reason": reason,
-        })
+        await ws_manager.send(
+            s.client_id,
+            {
+                "type": "session_closed",
+                "sessionId": session_id,
+                "reason": reason,
+                "session": {"id": s.id, "status": s.status, "tgUsername": s.tg_username},
+            },
+        )
