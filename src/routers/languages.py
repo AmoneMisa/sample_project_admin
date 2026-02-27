@@ -1,6 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,8 +32,10 @@ class CreateLanguagePayload(BaseModel):
 
 
 class UpdateLanguagePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool | None = Field(default=None, alias="isEnabled")
     name: Optional[str] = Field(None, min_length=1)
-    enabled: Optional[bool] = None
 
 
 # ---------------------------------------------------------
