@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers import (
     languages, translations, testimonials, headerMenu, users, auth, offerCards, contacts, footer,
     featureCards, cleanup, services, serviceCategories, pdf, convert, dockerhub, tabs, animatedText,
-    chat
+    chat, countryIndices
 )
 from .models.models import Base
 from .db.session import engine
@@ -76,3 +76,4 @@ app.include_router(dockerhub.router)
 app.include_router(tabs.router)
 app.include_router(animatedText.router)
 app.include_router(chat.router)
+app.include_router(countryIndices.router)
