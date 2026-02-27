@@ -1,11 +1,12 @@
+import httpx
+import json
 from fastapi import APIRouter, HTTPException
-from typing import Optional, Any, Dict, List
-import httpx, json, math
 
 from ..utils.redis_client import get_redis
 
 router = APIRouter(prefix="/wb", tags=["WorldBank"])
 TTL = 60 * 60 * 24 * 30  # 30 days
+
 
 @router.get("/indicator")
 async def wb_indicator(country: str, indicator: str, per_page: int = 60):
