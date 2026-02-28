@@ -25,6 +25,7 @@ def load_country_codes() -> Dict[str, Dict[str, str]]:
 
 COUNTRY_CODES = load_country_codes()
 
+
 # -------------------------------------------------
 # Schemas
 # -------------------------------------------------
@@ -41,6 +42,15 @@ class NormalizedDTO(BaseModel):
     air: Optional[float] = None
     inequality: Optional[float] = None
     health: Optional[float] = None
+
+    # US extras (0..10)
+    transportPublic: Optional[float] = None
+    transportCar: Optional[float] = None
+    remoteWork: Optional[float] = None
+    commuteTime: Optional[float] = None
+
+    societyInternational: Optional[float] = None
+    langBarrier: Optional[float] = None
 
 
 class BundleDTO(BaseModel):
@@ -102,13 +112,22 @@ ACS_VARS: Dict[str, str] = {
     "gini": "B19083_001E",
 
     "education_bachelor_plus_pct": "DP02_0068PE",
-    "internet_broadband_pct": "DP02_0151PE",
+    "internet_broadband_pct": "DP02_0154PE",
     "unemployment_pct": "DP03_0009PE",
     "poverty_pct": "DP03_0128PE",
 
-    # health: percent insured — var name can vary by year; we keep it optional.
-    # If it’s missing for some year, it will just be None.
-    "insured_pct": "DP03_0099PE",
+    # % WITHOUT health insurance coverage (we invert to insured)
+    "uninsured_pct": "DP03_0099PE",
+
+    # transport / work
+    "commute_public_pct": "DP03_0021PE",
+    "commute_drive_alone_pct": "DP03_0019PE",
+    "work_from_home_pct": "DP03_0024PE",
+    "commute_mean_minutes": "DP03_0025E",
+
+    # society / language
+    "foreign_born_pct": "DP02_0094PE",
+    "english_only_pct": "DP02_0113PE",
 }
 
 
@@ -237,6 +256,7 @@ async def census_fetch(
         vars_list: List[str],
         state_fips: str
 ) -> Any:
+    endpoint = endpoint.strip().lstrip("/")
     url = f"https://api.census.gov/data/{year}/{endpoint}"
     params = {
         "get": ",".join(vars_list),
@@ -285,15 +305,49 @@ def normalize_us_state_from_acs(extracted: Dict[str, Optional[float]]) -> Normal
         # 0.35..0.55 => 10..0
         out.inequality = round1(clamp01(1.0 - ((gini - 0.35) / (0.55 - 0.35))) * 10.0)
 
-    insured = extracted.get(ACS_VARS["insured_pct"])
+    no_ins = extracted.get(ACS_VARS["uninsured_pct"])
+    insured = None if no_ins is None else (100.0 - no_ins)
     if insured is not None:
-        # 70..98 => 0..10
         out.health = round1(clamp01((insured - 70.0) / (98.0 - 70.0)) * 10.0)
 
     pov = extracted.get(ACS_VARS["poverty_pct"])
     if pov is not None:
         # 5..25% => 10..0 (lower poverty is better)
         out.qualityOfLife = round1(clamp01(1.0 - ((pov - 5.0) / (25.0 - 5.0))) * 10.0)
+    # ---- transport ----
+    pub = extracted.get(ACS_VARS["commute_public_pct"])
+    if pub is not None:
+        # 0..20% => 0..10 (для штатов 20% уже очень много)
+        out.transportPublic = round1(clamp01(pub / 20.0) * 10.0)
+
+    car = extracted.get(ACS_VARS["commute_drive_alone_pct"])
+    if car is not None:
+        # 90..50% => 0..10 (меньше зависимость от авто = лучше для public-ориентированного)
+        # если тебе нужно "люблю машину" — можно инвертнуть ось в UI
+        out.transportCar = round1(clamp01((car - 50.0) / (90.0 - 50.0)) * 10.0)
+
+    wfh = extracted.get(ACS_VARS["work_from_home_pct"])
+    if wfh is not None:
+        # 0..25% => 0..10
+        out.remoteWork = round1(clamp01(wfh / 25.0) * 10.0)
+
+    tt = extracted.get(ACS_VARS["commute_mean_minutes"])
+    if tt is not None:
+        # 15..40 минут => 10..0 (меньше = лучше)
+        out.commuteTime = round1(clamp01(1.0 - ((tt - 15.0) / (40.0 - 15.0))) * 10.0)
+
+    # ---- society / language ----
+    fb = extracted.get(ACS_VARS["foreign_born_pct"])
+    if fb is not None:
+        # 0..30% => 0..10
+        out.societyInternational = round1(clamp01(fb / 30.0) * 10.0)
+
+    eng = extracted.get(ACS_VARS["english_only_pct"])
+    non_eng = None if eng is None else (100.0 - eng)
+    if non_eng is not None:
+        # "языковой барьер" как насыщенность не-англ среды:
+        # 0..40% => 0..10
+        out.langBarrier = round1(clamp01(non_eng / 40.0) * 10.0)
 
     # safety / air — no guaranteed no-key source here => keep None
     out.safety = None
@@ -326,7 +380,21 @@ async def build_bundle(key: str, include_raw: bool) -> BundleDTO:
 
             if code and fips:
                 # DP vars live in acs/acs1/profile, B vars in acs/acs1
-                dp_vars = [ACS_VARS["education_bachelor_plus_pct"], ACS_VARS["internet_broadband_pct"], ACS_VARS["unemployment_pct"], ACS_VARS["poverty_pct"], ACS_VARS["insured_pct"]]
+                dp_vars = [
+                    ACS_VARS["education_bachelor_plus_pct"],
+                    ACS_VARS["internet_broadband_pct"],
+                    ACS_VARS["unemployment_pct"],
+                    ACS_VARS["poverty_pct"],
+                    ACS_VARS["uninsured_pct"],
+
+                    ACS_VARS["commute_public_pct"],
+                    ACS_VARS["commute_drive_alone_pct"],
+                    ACS_VARS["work_from_home_pct"],
+                    ACS_VARS["commute_mean_minutes"],
+
+                    ACS_VARS["foreign_born_pct"],
+                    ACS_VARS["english_only_pct"],
+                ]
                 b_vars = [ACS_VARS["income_median_household_usd"], ACS_VARS["gini"]]
 
                 extracted: Dict[str, Optional[float]] = {}
